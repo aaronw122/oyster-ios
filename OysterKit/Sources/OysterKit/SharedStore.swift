@@ -11,8 +11,9 @@ public struct StoreKey<Value: Codable & Sendable>: Hashable, Sendable {
 
 /// Typed `Codable` key/value storage over `UserDefaults`.
 ///
-/// Values are JSON-encoded, so any `Codable` type round-trips. Reads of
-/// missing keys or undecodable data yield `nil` rather than failing.
+/// Values are JSON-encoded with the contract coder (`ContractCoding`), so any
+/// `Codable` type round-trips and dates use the same wire format as the API.
+/// Reads of missing keys or undecodable data yield `nil` rather than failing.
 public final class SharedStore: @unchecked Sendable {
     // UserDefaults is documented thread-safe; the encoder/decoder are created per call.
     private let defaults: UserDefaults
@@ -28,11 +29,11 @@ public final class SharedStore: @unchecked Sendable {
 
     public func get<Value>(_ key: StoreKey<Value>) -> Value? {
         guard let data = defaults.data(forKey: key.name) else { return nil }
-        return try? JSONDecoder().decode(Value.self, from: data)
+        return try? ContractCoding.makeDecoder().decode(Value.self, from: data)
     }
 
     public func set<Value>(_ value: Value, for key: StoreKey<Value>) throws {
-        let data = try JSONEncoder().encode(value)
+        let data = try ContractCoding.makeEncoder().encode(value)
         defaults.set(data, forKey: key.name)
     }
 

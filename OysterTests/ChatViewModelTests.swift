@@ -157,6 +157,77 @@ import Testing
         #expect(service.sent.last?.message == "I've signed in to Strava.")
     }
 
+    @Test func sameCallbackFromTheSheetAndAnOpenedURLResumesOnce() async throws {
+        let url = try #require(URL(string: "https://oyster.example.com/oauth/plaid/start?state=abc"))
+        let callback = try #require(URL(string: "oyster://oauth/complete?provider=plaid&status=ok"))
+        service.script(
+            .init(events: [.oauth(provider: "plaid", url: url.absoluteString), .done]),
+            .init(events: [.text(delta: "Thanks!"), .done])
+        )
+        authenticator.result = .success(callback)
+        let model = makeModel()
+
+        model.send("my checking balance")
+        await model.settle()
+        // The same callback also reaches `.onOpenURL`, after the sheet already delivered it.
+        model.handleOAuthCallback(callback)
+        await model.settle()
+
+        #expect(service.sent.map(\.message) == ["my checking balance", "I've signed in to your bank."])
+        #expect(model.rows.filter { $0.kind == .user("I've signed in to your bank.") }.count == 1)
+    }
+
+    @Test func callbackArrivingMidStreamResumesOnceAfterTheTurnEnds() async throws {
+        let url = try #require(URL(string: "https://oyster.example.com/oauth/strava/start?state=abc"))
+        let callback = try #require(URL(string: "oyster://oauth/complete?provider=strava&status=ok"))
+        service.script(
+            .init(events: [.oauth(provider: "strava", url: url.absoluteString)], hangs: true),
+            .init(events: [.text(delta: "Connected."), .done])
+        )
+        authenticator.result = .success(callback)
+        let model = makeModel()
+
+        model.send("my weekly miles")
+        try await until { model.rows.last?.kind == .signIn(provider: "strava", url: url) }
+        model.handleOAuthCallback(callback)
+        model.handleOAuthCallback(callback)
+        #expect(model.isStreaming)
+        #expect(service.sent.count == 1)
+
+        service.finishHangingTurn()
+        await model.settle()
+
+        #expect(service.sent.map(\.message) == ["my weekly miles", "I've signed in to Strava."])
+        // Already signed in, so the sheet isn't presented for the consumed row.
+        #expect(authenticator.requests.isEmpty)
+        #expect(model.rows.last?.kind == .assistant("Connected."))
+    }
+
+    @Test func aLaterSignInToTheSameProviderStillResumes() async throws {
+        let first = try #require(URL(string: "https://oyster.example.com/oauth/github/start?state=one"))
+        let second = try #require(URL(string: "https://oyster.example.com/oauth/github/start?state=two"))
+        let callback = try #require(URL(string: "oyster://oauth/complete?provider=github&status=ok"))
+        service.script(
+            .init(events: [.oauth(provider: "github", url: first.absoluteString), .done]),
+            .init(events: [.text(delta: "Done."), .done]),
+            .init(events: [.oauth(provider: "github", url: second.absoluteString), .done]),
+            .init(events: [.text(delta: "Done again."), .done])
+        )
+        authenticator.result = .success(callback)
+        let model = makeModel()
+
+        model.send("my pull requests")
+        await model.settle()
+        model.send("my issues too")
+        await model.settle()
+
+        #expect(service.sent.map(\.message) == [
+            "my pull requests", "I've signed in to GitHub.",
+            "my issues too", "I've signed in to GitHub.",
+        ])
+        #expect(authenticator.requests.map(\.url) == [first, second])
+    }
+
     @Test func errorsBecomePlainLanguageRows() async {
         service.script(
             .init(events: [.text(delta: "Looking"), .unavailable(text: "That data isn't available yet."), .error(text: "Something broke on the server.")]),
@@ -278,12 +349,23 @@ final class ScriptedChatService: ChatService, @unchecked Sendable {
     private var turns: [Turn] = []
     private var _sent: [Sent] = []
     private var _terminated = 0
+    private var hanging: AsyncThrowingStream<ChatEvent, Error>.Continuation?
 
     var sent: [Sent] { lock.withLock { _sent } }
     var terminatedStreams: Int { lock.withLock { _terminated } }
 
     func script(_ turns: Turn...) {
         lock.withLock { self.turns.append(contentsOf: turns) }
+    }
+
+    /// Ends the open stream of a turn scripted with `hangs`, as if the server finished it.
+    func finishHangingTurn() {
+        // Finish outside the lock: `onTermination` takes it too.
+        let continuation = lock.withLock {
+            defer { hanging = nil }
+            return hanging
+        }
+        continuation?.finish()
     }
 
     func messages(sessionId: String, message: String) -> AsyncThrowingStream<ChatEvent, Error> {
@@ -297,7 +379,10 @@ final class ScriptedChatService: ChatService, @unchecked Sendable {
                 self.lock.withLock { self._terminated += 1 }
             }
             for event in turn.events { continuation.yield(event) }
-            if turn.hangs { return }
+            if turn.hangs {
+                self.lock.withLock { self.hanging = continuation }
+                return
+            }
             if let error = turn.error {
                 continuation.finish(throwing: error)
             } else {

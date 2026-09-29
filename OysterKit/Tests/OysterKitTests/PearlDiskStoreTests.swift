@@ -282,4 +282,12 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
 
         #expect(ServerConfig.load(from: SharedStore(defaults: UserDefaults(suiteName: suiteName)!)) == config)
     }
+
+    @Test func readsAConfigSavedBeforeTheContractCoder() throws {
+        // Builds that predate `ContractCoding` in `SharedStore` wrote with a default `JSONEncoder`.
+        let config = ServerConfig(baseURL: URL(string: "https://oyster.example.com/api")!, token: "tok")
+        defaults.set(try JSONEncoder().encode(config), forKey: ServerConfig.storeKey.name)
+
+        #expect(ServerConfig.load(from: SharedStore(defaults: defaults)) == config)
+    }
 }
