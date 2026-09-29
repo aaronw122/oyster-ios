@@ -51,7 +51,7 @@ public enum SizeBudgets {
     ///
     /// Mirrors the server's fit check, which projects before measuring: fields
     /// not shown at `size` and items past the cap are ignored, and every shown
-    /// string is measured in Unicode code points.
+    /// string is measured in Unicode code points. An empty `value` is rejected.
     public static func fits(_ output: WidgetOutput, size: Size) -> [String] {
         let budget = self[size]
         var errors: [String] = []
@@ -63,7 +63,11 @@ public enum SizeBudgets {
             }
         }
 
-        check("value", output.value, budget.value)
+        if output.value.isEmpty {
+            errors.append("\(size.rawValue).value: value is empty")
+        } else {
+            check("value", output.value, budget.value)
+        }
         if let limit = budget.subtitle, let subtitle = output.subtitle {
             check("subtitle", subtitle, limit)
         }

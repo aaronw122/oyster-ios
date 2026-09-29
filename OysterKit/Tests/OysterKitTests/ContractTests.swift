@@ -229,6 +229,12 @@ private let fixtureTypes: [String: @Sendable (Data) throws -> Void] = [
         #expect(SizeBudgets.fits(medium, size: .medium) == [])
     }
 
+    @Test(arguments: Size.allCases)
+    func emptyValueFailsAtEverySize(size: Size) {
+        let errors = SizeBudgets.fits(WidgetOutput(value: ""), size: size)
+        #expect(errors == ["\(size.rawValue).value: value is empty"])
+    }
+
     @Test func fieldsNotShownAtASizeAreIgnored() throws {
         let medium = try Fixture.decode(WidgetOutput.self, "widget-output.max.medium.json")
         // inline shows only `value` (12); lock-screen rendering drops subtitle and items.
