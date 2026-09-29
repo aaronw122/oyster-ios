@@ -28,6 +28,10 @@ struct ChatSessionStore {
     func save(_ sessionId: String) {
         defaults.set(sessionId, forKey: Self.key)
     }
+
+    func clear() {
+        defaults.removeObject(forKey: Self.key)
+    }
 }
 
 @MainActor
@@ -37,7 +41,8 @@ final class ChatViewModel {
     /// What the assistant is doing right now; only the latest, only while streaming.
     private(set) var status: String?
     private(set) var isStreaming = false
-    private(set) var sessionId: String
+    /// The server-side conversation; `nil` until the first message is sent.
+    private(set) var sessionId: String?
     var draft = ""
 
     /// `nil` until the app is connected to a server.
@@ -61,16 +66,16 @@ final class ChatViewModel {
         self.disk = disk
         self.sessions = sessions
         self.authenticator = authenticator
-        if let saved = sessions.load() {
-            sessionId = saved
-        } else {
-            sessionId = UUID().uuidString
-            sessions.save(sessionId)
-        }
+        sessionId = sessions.load()
     }
 
     var canSend: Bool {
         service != nil && !isStreaming
+    }
+
+    /// A conversation is on the server (possibly from an earlier launch) that the user can leave.
+    var canStartOver: Bool {
+        sessionId != nil
     }
 
     /// Only the latest question is answerable, and only between turns.
@@ -95,7 +100,7 @@ final class ChatViewModel {
         rows.append(ChatRow(.user(message)))
         isStreaming = true
         status = nil
-        let sessionId = sessionId
+        let sessionId = sessionId ?? startSession()
         currentTask = Task { [weak self] in
             await self?.runTurn(service.messages(sessionId: sessionId, message: message))
         }
@@ -110,13 +115,21 @@ final class ChatViewModel {
         status = nil
     }
 
-    /// Clears the transcript and starts a fresh server-side conversation.
+    /// Clears the transcript and forgets the server-side conversation; the next
+    /// message starts a fresh one.
     func newConversation() {
         cancel()
         rows = []
         draft = ""
-        sessionId = UUID().uuidString
-        sessions.save(sessionId)
+        sessionId = nil
+        sessions.clear()
+    }
+
+    private func startSession() -> String {
+        let id = UUID().uuidString
+        sessionId = id
+        sessions.save(id)
+        return id
     }
 
     /// Re-opens a sign-in the user dismissed.

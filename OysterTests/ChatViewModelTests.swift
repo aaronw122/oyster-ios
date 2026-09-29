@@ -29,7 +29,8 @@ import Testing
         #expect(model.rows.map(\.kind) == [.user("hi"), .assistant("Hello")])
         #expect(model.status == nil)
         #expect(!model.isStreaming)
-        #expect(service.sent == [.init(sessionId: model.sessionId, message: "hi")])
+        #expect(service.sent == [.init(sessionId: model.sessionId ?? "", message: "hi")])
+        #expect(model.sessionId != nil)
     }
 
     @Test func statusShowsOnlyTheLatestWhileStreamingAndCancelStopsTheStream() async throws {
@@ -184,19 +185,30 @@ import Testing
         #expect(model.canSend)
     }
 
-    @Test func sessionPersistsUntilNewConversation() async {
+    @Test func sessionPersistsAcrossLaunchesUntilNewConversation() async throws {
         let first = makeModel()
-        let second = makeModel()
-        #expect(first.sessionId == second.sessionId)
+        #expect(!first.canStartOver)
 
-        service.script(.init(events: [.text(delta: "Hi"), .done]))
+        service.script(.init(events: [.text(delta: "Hi"), .done]), .init(events: [.done]))
         first.send("hello")
         await first.settle()
-        first.newConversation()
+        let sessionId = try #require(first.sessionId)
 
-        #expect(first.rows.isEmpty)
-        #expect(first.sessionId != second.sessionId)
-        #expect(makeModel().sessionId == first.sessionId)
+        // A later launch: empty transcript, same server conversation, and it can be left.
+        let relaunched = makeModel()
+        #expect(relaunched.rows.isEmpty)
+        #expect(relaunched.sessionId == sessionId)
+        #expect(relaunched.canStartOver)
+
+        relaunched.newConversation()
+        #expect(!relaunched.canStartOver)
+        #expect(makeModel().sessionId == nil)
+
+        relaunched.send("again")
+        await relaunched.settle()
+        let fresh = try #require(relaunched.sessionId)
+        #expect(fresh != sessionId)
+        #expect(service.sent.map(\.sessionId) == [sessionId, fresh])
     }
 
     @Test(arguments: [

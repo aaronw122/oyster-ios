@@ -45,7 +45,7 @@ struct ChatView: View {
                     Button("New conversation", systemImage: "square.and.pencil") {
                         model.newConversation()
                     }
-                    .disabled(model.rows.isEmpty)
+                    .disabled(!model.canStartOver)
                 }
             }
         }
