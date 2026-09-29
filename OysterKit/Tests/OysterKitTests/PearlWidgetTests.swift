@@ -103,6 +103,28 @@ final class NetworkTripwire: URLProtocol, @unchecked Sendable {
         #expect(content.output(for: .rectangular).value == "last good")
     }
 
+    @Test func pearlDeletedOnServerAsksToChooseEvenWithDiskData() async throws {
+        try disk.saveData(freshData(.small))
+        let server = StubServer { _ in .json(404, Data()) }
+        let loader = PearlEntryLoader(
+            disk: disk,
+            config: ServerConfig(baseURL: server.baseURL, token: "tok"),
+            session: server.session
+        )
+        #expect(await loader.load(pearlId: pearlId, size: .small) == .choosePearl)
+    }
+
+    @Test func revokedTokenOpensOysterEvenWithDiskData() async throws {
+        try disk.saveData(freshData(.small))
+        let server = StubServer { _ in .json(401, Data()) }
+        let loader = PearlEntryLoader(
+            disk: disk,
+            config: ServerConfig(baseURL: server.baseURL, token: "tok"),
+            session: server.session
+        )
+        #expect(await loader.load(pearlId: pearlId, size: .small) == .openOyster)
+    }
+
     @Test func transportFailureWithoutDiskDataOpensOyster() async {
         let loader = PearlEntryLoader(disk: disk) { _, _ in throw APIError.transport(URLError(.notConnectedToInternet)) }
         // Last-good for another size doesn't stand in for this one.

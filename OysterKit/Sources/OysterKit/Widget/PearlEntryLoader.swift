@@ -35,9 +35,19 @@ public struct PearlEntryLoader: Sendable {
     public static func appGroup() -> PearlEntryLoader {
         PearlEntryLoader(
             disk: .appGroup,
-            config: SharedStore.appGroup.flatMap(ServerConfig.load(from:))
+            config: SharedStore.appGroup.flatMap(ServerConfig.load(from:)),
+            session: widgetSession
         )
     }
+
+    /// Short timeouts so a slow server still leaves time to commit the stale
+    /// fallback within WidgetKit's refresh budget.
+    private static let widgetSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 12
+        configuration.timeoutIntervalForResource = 15
+        return URLSession(configuration: configuration)
+    }()
 
     /// Refreshes the Pearl's data for `size`.
     public func load(pearlId: String?, size: Size) async -> PearlWidgetContent {
@@ -48,6 +58,11 @@ public struct PearlEntryLoader: Sendable {
             let data = try await fetch(pearlId, size)
             try? disk.saveData(data)
             return .pearl(data)
+        } catch APIError.notFound {
+            // Deleted on the server; the next library sync drops it from the device.
+            return .choosePearl
+        } catch APIError.unauthorized {
+            return .openOyster
         } catch {
             guard var lastGood = disk.data(id: pearlId, size: size) else { return .openOyster }
             lastGood.stale = true
