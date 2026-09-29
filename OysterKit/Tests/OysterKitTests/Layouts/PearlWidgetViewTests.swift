@@ -9,10 +9,11 @@ import WidgetKit
     private static let schemes: [(name: String, style: UIUserInterfaceStyle)] = [("light", .light), ("dark", .dark)]
 
     private func snapshot(_ output: WidgetOutput, size: Size, stale: Bool = false, named name: String,
+                          schemes: [(name: String, style: UIUserInterfaceStyle)] = Self.schemes,
                           fileID: StaticString = #fileID, filePath: StaticString = #filePath,
                           testName: String = #function, line: UInt = #line, column: UInt = #column) {
         let frame = PearlWidgetView.previewFrame(for: size)
-        for scheme in Self.schemes {
+        for scheme in schemes {
             assertSnapshot(
                 of: previewCard(output, size: size, stale: stale),
                 as: .image(
@@ -36,6 +37,12 @@ import WidgetKit
     @Test(arguments: Size.allCases)
     func maxLength(size: Size) throws {
         snapshot(try LayoutFixtures.max(size), size: size, named: size.rawValue)
+    }
+
+    /// Worst-case glyphs at every budget: shrunk, never truncated (light only).
+    @Test(arguments: Size.allCases, WideGlyph.allCases)
+    func wideGlyphs(size: Size, glyph: WideGlyph) {
+        snapshot(glyph.output(for: size), size: size, named: "\(size.rawValue).\(glyph)", schemes: [Self.schemes[0]])
     }
 
     @Test func staleSmall() throws {

@@ -21,7 +21,7 @@ public struct PearlWidgetView: View {
     }
 
     /// Canonical point size of `size`: the smallest iPhone widget of that family
-    /// on iOS 17 (375×667 pt screens). Chat preview cards and snapshots use it.
+    /// on iOS 17 (see `PearlLayoutSpec`). Chat preview cards and snapshots use it.
     public static func previewFrame(for size: Size) -> CGSize {
         PearlLayoutSpec.spec(for: size).frame
     }
@@ -54,17 +54,21 @@ struct StaleDot: View {
 }
 
 /// Lock Screen inline: the value on one line. WidgetKit sets the inline type,
-/// so stale is a symbol rather than a drawn dot.
+/// so stale is a symbol rather than a drawn dot — shown only when it fits
+/// beside the value; the value itself always has the whole line.
 struct InlineLayout: View {
     let output: WidgetOutput
     let spec: PearlLayoutSpec
     let stale: Bool
 
     var body: some View {
-        HStack(spacing: 4) {
+        ViewThatFits(in: .horizontal) {
             if stale {
-                Image(systemName: "clock.arrow.circlepath")
-                    .accessibilityLabel(Text("Not updated recently"))
+                HStack(spacing: 4) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .accessibilityLabel(Text("Not updated recently"))
+                    spec.text(output.value, .value)
+                }
             }
             spec.text(output.value, .value)
         }
@@ -125,15 +129,60 @@ struct ItemRow: View {
                 }
             }
         } else {
-            HStack(alignment: .firstTextBaseline, spacing: spec.itemColumnGap) {
+            ItemColumns(gap: spec.itemColumnGap) {
                 spec.text(item.label, .itemLabel)
                     .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
                 if let value = item.value {
                     spec.text(value, .itemValue)
                         .foregroundStyle(.primary)
                 }
             }
+        }
+    }
+}
+
+/// One item row: label leading, value trailing, first baselines aligned.
+///
+/// When both don't fit at their ideal widths, each column gets the same
+/// fraction of its ideal width, so both shrink by the same factor and neither
+/// is starved. Deterministic, so `LayoutFitTests` can prove the fit.
+struct ItemColumns: Layout {
+    let gap: CGFloat
+
+    /// Widths given to columns with `ideal` widths in `available` points.
+    static func columnWidths(ideal: [CGFloat], available: CGFloat, gap: CGFloat) -> [CGFloat] {
+        let gaps = gap * CGFloat(max(ideal.count - 1, 0))
+        let total = ideal.reduce(0, +)
+        guard total + gaps > available, total > 0 else { return ideal }
+        let scale = max(available - gaps, 0) / total
+        return ideal.map { $0 * scale }
+    }
+
+    private func widths(_ subviews: Subviews, available: CGFloat?) -> [CGFloat] {
+        let ideal = subviews.map { $0.sizeThatFits(.unspecified).width }
+        guard let available else { return ideal }
+        return Self.columnWidths(ideal: ideal, available: available, gap: gap)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let widths = widths(subviews, available: proposal.width)
+        let heights = zip(subviews, widths).map { $0.sizeThatFits(ProposedViewSize(width: $1, height: nil)).height }
+        let natural = widths.reduce(0, +) + gap * CGFloat(max(subviews.count - 1, 0))
+        return CGSize(width: proposal.width ?? natural, height: heights.max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let widths = widths(subviews, available: bounds.width)
+        let proposals = widths.map { ProposedViewSize(width: $0, height: nil) }
+        let baselines = zip(subviews, proposals).map { $0.dimensions(in: $1)[VerticalAlignment.firstTextBaseline] }
+        let top = baselines.max() ?? 0
+        for (index, subview) in subviews.enumerated() {
+            let leading = index == 0
+            subview.place(
+                at: CGPoint(x: leading ? bounds.minX : bounds.maxX, y: bounds.minY + top - baselines[index]),
+                anchor: leading ? .topLeading : .topTrailing,
+                proposal: proposals[index]
+            )
         }
     }
 }

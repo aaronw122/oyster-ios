@@ -15,6 +15,28 @@ enum LayoutFixtures {
     }
 }
 
+/// The widest glyphs per code point: all-caps W and M, and a single-code-point
+/// emoji (emoji advance ≈ 1.08 em, wider than any Latin letter).
+enum WideGlyph: String, CaseIterable, Sendable {
+    case w = "W"
+    case m = "M"
+    case emoji = "🚲"
+
+    /// Every field `size` shows filled with this glyph to exactly its §2b budget,
+    /// and the item list at its cap.
+    func output(for size: Size) -> WidgetOutput {
+        let budget = SizeBudgets[size]
+        func fill(_ count: Int) -> String { String(repeating: rawValue, count: count) }
+        return WidgetOutput(
+            value: fill(budget.value),
+            subtitle: budget.subtitle.map(fill),
+            items: budget.items.map { limits in
+                Array(repeating: WidgetOutput.Item(label: fill(limits.label), value: fill(limits.value)), count: limits.max)
+            }
+        )
+    }
+}
+
 /// A Pearl view as a chat preview card shows it: the canonical frame over a
 /// plain surface, clipped like a widget.
 @MainActor
