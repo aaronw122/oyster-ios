@@ -2,13 +2,18 @@ import SwiftUI
 
 /// Fixed geometry and type for one size's native layout.
 ///
-/// Every number here is chosen so that each string at its §2b budget (the
-/// `widget-output.max.<size>.json` fixtures) sets on one line, unscaled, inside
-/// the smallest iPhone widget of that family that iOS 17 supports (375×667 pt
-/// screens, per the HIG widget dimension table). `LayoutFitTests` measures it.
+/// Frames are the smallest iPhone widget of each family iOS 17 supports, per
+/// the HIG widget dimension table: 141×141 / 292×141 for Home Screen (Display
+/// Zoom on 320-pt-wide screens) and 153×68 / 225×26 for the Lock Screen
+/// (375×667 screens). `LayoutFitTests` proves two things in those frames:
+/// - typical worst-case data (`widget-output.max.<size>.json`, every field at its
+///   §2b budget) sets on one line at full size, unscaled;
+/// - any string at its budget — including the widest glyphs per code point
+///   (single-code-point emoji, all-caps W/M) — sets on one line at no smaller
+///   than `minimumScale`, so text shrinks instead of truncating.
 ///
-/// Type is one face — SF Pro, condensed width — at fixed point sizes, so a
-/// budget-sized string can never grow past the width it was measured at.
+/// Type is one face — SF Pro — at fixed point sizes, so a budget-sized string
+/// can never grow past the width it was measured at.
 struct PearlLayoutSpec: Sendable {
     enum Role: CaseIterable, Sendable {
         case value
@@ -31,7 +36,15 @@ struct PearlLayoutSpec: Sendable {
     let itemColumnGap: CGFloat
     /// Items stack label over value (`true`) or share one row (`false`).
     let stacksItems: Bool
+    /// SF Pro condensed (`true`) or standard width (`false`).
+    let condensed: Bool
     let fontSizes: [Role: CGFloat]
+
+    /// Smallest scale any text may shrink to before it would truncate. Only
+    /// pathological strings ever need it: a budget's worth of emoji (≈1.45 em
+    /// each, whole-point advances) needs 0.27 for the small subtitle (28 in
+    /// 121 pt). Legible it isn't, but it is never cut off.
+    static let minimumScale: CGFloat = 0.25
 
     static let staleDotDiameter: CGFloat = 5
     static let staleDotGap: CGFloat = 4
@@ -46,26 +59,25 @@ struct PearlLayoutSpec: Sendable {
         )
     }
 
-    func font(_ role: Role) -> Font {
-        let size = fontSizes[role] ?? fontSizes[.value]!
-        switch role {
-        case .value:
-            return .system(size: size, weight: .semibold).width(.condensed).monospacedDigit()
-        case .itemValue:
-            return .system(size: size, weight: .medium).width(.condensed).monospacedDigit()
-        case .subtitle, .itemLabel:
-            return .system(size: size, weight: .regular).width(.condensed).monospacedDigit()
+    /// The role's type, optionally scaled (the tests measure at `minimumScale`).
+    func font(_ role: Role, scale: CGFloat = 1) -> Font {
+        let size = (fontSizes[role] ?? fontSizes[.value]!) * scale
+        let weight: Font.Weight = switch role {
+        case .value: .semibold
+        case .itemValue: .medium
+        case .subtitle, .itemLabel: .regular
         }
+        let font = Font.system(size: size, weight: weight)
+        return (condensed ? font.width(.condensed) : font).monospacedDigit()
     }
 
-    /// `string` set in the role's type, single line. The minimum scale factor is
-    /// a safety net for pathological glyphs only; budget-sized fixture strings fit
-    /// at full size (proved by `LayoutFitTests`).
+    /// `string` set in the role's type on one line, shrinking down to
+    /// `minimumScale` when its width is short.
     func text(_ string: String, _ role: Role) -> some View {
         Text(verbatim: string)
             .font(font(role))
             .lineLimit(1)
-            .minimumScaleFactor(0.75)
+            .minimumScaleFactor(Self.minimumScale)
     }
 
     static func spec(for size: Size) -> PearlLayoutSpec {
@@ -77,8 +89,9 @@ struct PearlLayoutSpec: Sendable {
         }
     }
 
-    // Lock Screen inline: WidgetKit sets the type itself; 17 pt semibold is the
-    // size we draw it at in previews and the upper bound we measure against.
+    // Lock Screen inline: WidgetKit draws it in the system font and ignores
+    // font and scale modifiers. We draw previews in, and measure against, SF Pro
+    // standard width 17 pt semibold — [INFERENCE] the Lock Screen date-line type.
     static let inline = PearlLayoutSpec(
         frame: CGSize(width: 225, height: 26),
         insets: EdgeInsets(),
@@ -87,6 +100,7 @@ struct PearlLayoutSpec: Sendable {
         itemSpacing: 0,
         itemColumnGap: 0,
         stacksItems: false,
+        condensed: false,
         fontSizes: [.value: 17]
     )
 
@@ -98,28 +112,31 @@ struct PearlLayoutSpec: Sendable {
         itemSpacing: 0,
         itemColumnGap: 0,
         stacksItems: false,
+        condensed: true,
         fontSizes: [.value: 20, .subtitle: 14]
     )
 
     static let small = PearlLayoutSpec(
-        frame: CGSize(width: 148, height: 148),
-        insets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12),
+        frame: CGSize(width: 141, height: 141),
+        insets: EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10),
         headerSpacing: 1,
         sectionSpacing: 8,
         itemSpacing: 5,
         itemColumnGap: 0,
         stacksItems: true,
+        condensed: true,
         fontSizes: [.value: 15, .subtitle: 11, .itemLabel: 11, .itemValue: 13]
     )
 
     static let medium = PearlLayoutSpec(
-        frame: CGSize(width: 321, height: 148),
-        insets: EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14),
+        frame: CGSize(width: 292, height: 141),
+        insets: EdgeInsets(top: 11, leading: 14, bottom: 11, trailing: 14),
         headerSpacing: 1,
-        sectionSpacing: 6,
-        itemSpacing: 1,
+        sectionSpacing: 4,
+        itemSpacing: 0,
         itemColumnGap: 12,
         stacksItems: false,
+        condensed: true,
         fontSizes: [.value: 20, .subtitle: 12, .itemLabel: 12, .itemValue: 12]
     )
 }
