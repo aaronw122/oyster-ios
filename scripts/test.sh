@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate the Xcode project, run OysterKit tests, and build the Oyster app + widget.
+# Generate the Xcode project, run OysterKit tests, then build the Oyster app + widget and run the app tests.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -21,8 +21,8 @@ xcodebuild test \
   -derivedDataPath "$DERIVED_DATA" \
   CODE_SIGNING_ALLOWED=NO
 
-echo "==> Build Oyster (app + widget)"
-xcodebuild build \
+echo "==> Build Oyster (app + widget) and run app tests"
+xcodebuild test \
   -project Oyster.xcodeproj \
   -scheme Oyster \
   -destination "$DESTINATION" \

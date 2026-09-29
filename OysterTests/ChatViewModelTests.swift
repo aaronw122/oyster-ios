@@ -1,0 +1,312 @@
+import Foundation
+import OysterKit
+import Testing
+@testable import Oyster
+
+@MainActor
+@Suite struct ChatViewModelTests {
+    let service = ScriptedChatService()
+    let authenticator = FakeAuthenticator()
+    let defaults = UserDefaults(suiteName: "ChatViewModelTests.\(UUID().uuidString)")!
+    let disk = PearlDiskStore(directory: FileManager.default.temporaryDirectory.appending(component: UUID().uuidString))
+
+    func makeModel() -> ChatViewModel {
+        ChatViewModel(
+            service: service,
+            disk: disk,
+            sessions: ChatSessionStore(defaults: defaults),
+            authenticator: authenticator
+        )
+    }
+
+    @Test func textDeltasAccumulateIntoOneReplyAndStatusClearsAtTheEnd() async {
+        service.script(.init(events: [.status(text: "Finding stations"), .text(delta: "Hel"), .text(delta: "lo"), .done]))
+        let model = makeModel()
+
+        #expect(model.send("  hi  "))
+        await model.settle()
+
+        #expect(model.rows.map(\.kind) == [.user("hi"), .assistant("Hello")])
+        #expect(model.status == nil)
+        #expect(!model.isStreaming)
+        #expect(service.sent == [.init(sessionId: model.sessionId, message: "hi")])
+    }
+
+    @Test func statusShowsOnlyTheLatestWhileStreamingAndCancelStopsTheStream() async throws {
+        service.script(.init(events: [.status(text: "Finding stations"), .status(text: "Checking docks")], hangs: true))
+        let model = makeModel()
+
+        model.send("docks near work")
+        try await until { model.status == "Checking docks" }
+        #expect(model.isStreaming)
+        #expect(!model.canSend)
+
+        model.cancel()
+        #expect(!model.isStreaming)
+        #expect(model.status == nil)
+        try await until { service.terminatedStreams == 1 }
+        #expect(model.canSend)
+    }
+
+    @Test func questionOptionSendsItsTextAndOnlyTheLatestQuestionIsAnswerable() async {
+        service.script(
+            .init(events: [.question(id: "q_threshold", text: "How many open docks?", options: ["1", "3"]), .done]),
+            .init(events: [.text(delta: "Got it."), .done])
+        )
+        let model = makeModel()
+
+        model.send("Citi Bike near work")
+        await model.settle()
+        let question = model.rows[1]
+        #expect(question.kind == .question(id: "q_threshold", text: "How many open docks?", options: ["1", "3"]))
+        #expect(model.canAnswer(question))
+
+        model.send("3")
+        await model.settle()
+        #expect(service.sent.map(\.message) == ["Citi Bike near work", "3"])
+        #expect(!model.canAnswer(question))
+        #expect(model.rows.last?.kind == .assistant("Got it."))
+    }
+
+    @Test func previewCardsFollowSizeOrderWithPlainLabels() async {
+        let medium = WidgetOutput(value: "W 21st & 6th", subtitle: "5 docks", items: [.init(label: "W 22 St", value: "11")])
+        let inline = WidgetOutput(value: "W 21st & 6th")
+        let small = WidgetOutput(value: "W 21st & 6th", subtitle: "5 docks")
+        service.script(.init(events: [.preview(previews: [.medium: medium, .inline: inline, .small: small]), .done]))
+        let model = makeModel()
+
+        model.send("preview it")
+        await model.settle()
+
+        guard case .previews(let cards) = model.rows.last?.kind else {
+            Issue.record("expected a preview row, got \(String(describing: model.rows.last))")
+            return
+        }
+        #expect(cards.map(\.size) == [.inline, .small, .medium])
+        #expect(cards.map(\.label) == ["Lock Screen, one line", "Small", "Medium"])
+        #expect(cards.map(\.output) == [inline, small, medium])
+    }
+
+    @Test func savedPearlIsWrittenToTheOnDeviceLibrary() async {
+        let pearl = PearlSummary(id: "pearl_citibike", name: "Citi Bike docks near work")
+        service.script(.init(events: [.saved(pearl: pearl), .done]))
+        let model = makeModel()
+
+        model.send("save it")
+        await model.settle()
+
+        #expect(disk.list() == [pearl])
+        #expect(model.rows.last?.kind == .saved(name: "Citi Bike docks near work"))
+    }
+
+    @Test func successfulSignInSendsTheResumeMessage() async throws {
+        let url = try #require(URL(string: "https://oyster.example.com/oauth/plaid/start?state=abc"))
+        service.script(
+            .init(events: [.status(text: "Connecting your bank"), .oauth(provider: "plaid", url: url.absoluteString), .done]),
+            .init(events: [.text(delta: "Thanks!"), .done])
+        )
+        authenticator.result = .success(URL(string: "oyster://oauth/complete?provider=plaid&status=ok"))
+        let model = makeModel()
+
+        model.send("my checking balance")
+        await model.settle()
+
+        #expect(authenticator.requests == [.init(url: url, callbackScheme: "oyster")])
+        #expect(service.sent.map(\.message) == ["my checking balance", "I've signed in to your bank."])
+        #expect(model.rows.map(\.kind) == [
+            .user("my checking balance"),
+            .user("I've signed in to your bank."),
+            .assistant("Thanks!"),
+        ])
+    }
+
+    @Test func failedSignInOffersARetryThatAsksTheAssistantAgain() async throws {
+        let url = try #require(URL(string: "https://oyster.example.com/oauth/github/start?state=abc"))
+        service.script(.init(events: [.oauth(provider: "github", url: url.absoluteString), .done]))
+        authenticator.result = .success(URL(string: "oyster://oauth/complete?provider=github&status=error&code=denied"))
+        let model = makeModel()
+
+        model.send("my open pull requests")
+        await model.settle()
+
+        #expect(model.rows.last?.kind == .signInFailed(provider: "github"))
+        #expect(service.sent.count == 1)
+
+        model.retrySignIn(provider: "github")
+        await model.settle()
+        #expect(service.sent.last?.message == "Let's try signing in to GitHub again.")
+    }
+
+    @Test func cancelledSignInIsSilentAndCanBeReopened() async throws {
+        let url = try #require(URL(string: "https://oyster.example.com/oauth/strava/start?state=abc"))
+        service.script(.init(events: [.oauth(provider: "strava", url: url.absoluteString), .done]))
+        authenticator.result = .success(nil)
+        let model = makeModel()
+
+        model.send("my weekly miles")
+        await model.settle()
+
+        #expect(model.rows.last?.kind == .signIn(provider: "strava", url: url))
+        #expect(service.sent.count == 1)
+
+        authenticator.result = .success(URL(string: "oyster://oauth/complete?provider=strava&status=ok"))
+        model.signIn(url: url)
+        await model.settle()
+        #expect(authenticator.requests.count == 2)
+        #expect(service.sent.last?.message == "I've signed in to Strava.")
+    }
+
+    @Test func errorsBecomePlainLanguageRows() async {
+        service.script(
+            .init(events: [.text(delta: "Looking"), .unavailable(text: "That data isn't available yet."), .error(text: "Something broke on the server.")]),
+            .init(events: [], error: APIError.transport(URLError(.notConnectedToInternet))),
+            .init(events: [], error: APIError.decoding(DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "{\"type\":1}"))))
+        )
+        let model = makeModel()
+
+        model.send("one")
+        await model.settle()
+        model.send("two")
+        await model.settle()
+        model.send("three")
+        await model.settle()
+
+        let notices = model.rows.compactMap { row -> String? in
+            if case .notice(let text) = row.kind { return text }
+            return nil
+        }
+        #expect(notices == [
+            "That data isn't available yet.",
+            "Something broke on the server.",
+            "Couldn't reach your Oyster server. Check your connection and try again.",
+            "Something went wrong. Try again.",
+        ])
+        #expect(model.canSend)
+    }
+
+    @Test func sessionPersistsUntilNewConversation() async {
+        let first = makeModel()
+        let second = makeModel()
+        #expect(first.sessionId == second.sessionId)
+
+        service.script(.init(events: [.text(delta: "Hi"), .done]))
+        first.send("hello")
+        await first.settle()
+        first.newConversation()
+
+        #expect(first.rows.isEmpty)
+        #expect(first.sessionId != second.sessionId)
+        #expect(makeModel().sessionId == first.sessionId)
+    }
+
+    @Test(arguments: [
+        ("oyster://oauth/complete?provider=plaid&status=ok", OAuthCallback?.some(.init(provider: "plaid", succeeded: true))),
+        ("oyster://oauth/complete?provider=plaid&status=error&code=denied", .some(.init(provider: "plaid", succeeded: false))),
+        ("oyster://oauth/complete?status=ok", nil),
+        ("oyster://somewhere/else?provider=plaid&status=ok", nil),
+        ("https://oauth/complete?provider=plaid&status=ok", nil),
+    ])
+    func oauthCallbackParsing(url: String, expected: OAuthCallback?) throws {
+        #expect(OAuthCallback(url: try #require(URL(string: url))) == expected)
+    }
+
+    @Test func providerDisplayNames() {
+        #expect(ProviderName.display(for: "plaid") == "your bank")
+        #expect(ProviderName.display(for: "github") == "GitHub")
+        #expect(ProviderName.display(for: "whoop") == "Whoop")
+        #expect(ProviderName.display(for: "google_calendar") == "Google Calendar")
+    }
+}
+
+// MARK: - Support
+
+extension ChatViewModel {
+    /// Waits for the current turn and anything it chains into (sign-in, resume message).
+    func settle() async {
+        while let task = currentTask {
+            await task.value
+            if currentTask == task { return }
+        }
+    }
+}
+
+@MainActor
+func until(_ condition: () -> Bool, timeout: Duration = .seconds(2)) async throws {
+    let deadline = ContinuousClock.now + timeout
+    while !condition() {
+        guard ContinuousClock.now < deadline else {
+            Issue.record("condition not met in time")
+            return
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+}
+
+/// Plays back one scripted turn per `messages` call and records what was sent.
+final class ScriptedChatService: ChatService, @unchecked Sendable {
+    struct Turn {
+        var events: [ChatEvent]
+        var error: (any Error)?
+        /// Leave the stream open after the events, like a server still working.
+        var hangs = false
+
+        init(events: [ChatEvent], error: (any Error)? = nil, hangs: Bool = false) {
+            self.events = events
+            self.error = error
+            self.hangs = hangs
+        }
+    }
+
+    struct Sent: Equatable {
+        let sessionId: String
+        let message: String
+    }
+
+    private let lock = NSLock()
+    private var turns: [Turn] = []
+    private var _sent: [Sent] = []
+    private var _terminated = 0
+
+    var sent: [Sent] { lock.withLock { _sent } }
+    var terminatedStreams: Int { lock.withLock { _terminated } }
+
+    func script(_ turns: Turn...) {
+        lock.withLock { self.turns.append(contentsOf: turns) }
+    }
+
+    func messages(sessionId: String, message: String) -> AsyncThrowingStream<ChatEvent, Error> {
+        let turn = lock.withLock {
+            _sent.append(Sent(sessionId: sessionId, message: message))
+            return turns.isEmpty ? Turn(events: [.done]) : turns.removeFirst()
+        }
+        return AsyncThrowingStream { continuation in
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.lock.withLock { self._terminated += 1 }
+            }
+            for event in turn.events { continuation.yield(event) }
+            if turn.hangs { return }
+            if let error = turn.error {
+                continuation.finish(throwing: error)
+            } else {
+                continuation.finish()
+            }
+        }
+    }
+}
+
+@MainActor
+final class FakeAuthenticator: WebAuthenticating {
+    struct Request: Equatable {
+        let url: URL
+        let callbackScheme: String
+    }
+
+    var result: Result<URL?, any Error> = .success(nil)
+    private(set) var requests: [Request] = []
+
+    func authenticate(url: URL, callbackScheme: String) async throws -> URL? {
+        requests.append(Request(url: url, callbackScheme: callbackScheme))
+        return try result.get()
+    }
+}

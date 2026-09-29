@@ -22,7 +22,7 @@ open Oyster.xcodeproj
 scripts/test.sh
 ```
 
-Generates the project, runs the `OysterKit` tests, and builds the `Oyster` scheme (app + widget) on the shared simulator. Override the simulator with `SIMULATOR_ID=<udid> scripts/test.sh`.
+Generates the project, runs the `OysterKit` tests, then builds the `Oyster` scheme (app + widget) and runs the app's `OysterTests` on the shared simulator. Override the simulator with `SIMULATOR_ID=<udid> scripts/test.sh`.
 
 ### Contract fixtures
 
@@ -34,7 +34,8 @@ BACKEND_REPO=../backend scripts/sync-fixtures.sh   # BACKEND_REF defaults to ori
 
 ## Layout
 
-- `Oyster/` — app target (`com.aaronw122.oyster`)
+- `Oyster/` — app target (`com.aaronw122.oyster`): Chat and Pearls tabs, connect sheet; handles `oyster://oauth/complete` sign-in callbacks
+- `OysterTests/` — app unit tests (chat view model against a scripted event stream)
 - `OysterWidget/` — widget extension (`com.aaronw122.oyster.widget`)
 - `OysterKit/` — shared library + tests; `AppGroup` / `SharedStore` for App Group storage; `Contract/` wire types
 - App Group: `group.com.aaronw122.oyster` (both targets)

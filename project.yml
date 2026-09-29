@@ -35,6 +35,15 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.aaronw122.oyster
+    info:
+      path: Oyster/Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: com.aaronw122.oyster
+            CFBundleURLSchemes:
+              - oyster
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aaronw122.oyster
@@ -45,6 +54,18 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         TARGETED_DEVICE_FAMILY: "1"
+
+  OysterTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: OysterTests
+    dependencies:
+      - target: Oyster
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aaronw122.oyster.tests
+        GENERATE_INFOPLIST_FILE: YES
 
   OysterWidget:
     type: app-extension
@@ -84,6 +105,10 @@ schemes:
         OysterWidget: all
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - OysterTests
     archive:
       config: Release
   OysterKit:
