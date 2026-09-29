@@ -17,7 +17,8 @@ let package = Package(
             dependencies: [
                 "OysterKit",
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
-            ]
+            ],
+            resources: [.copy("Fixtures")]
         ),
     ],
     swiftLanguageModes: [.v6]

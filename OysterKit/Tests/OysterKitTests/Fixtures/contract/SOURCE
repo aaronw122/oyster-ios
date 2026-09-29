@@ -1,0 +1,4 @@
+repo: github.com/aaronw122/oyster-backend
+ref: origin/feat/oyster-plan-integration
+commit: dcd07c0731e2407a65b48d22835237825e64b134
+path: fixtures/contract
