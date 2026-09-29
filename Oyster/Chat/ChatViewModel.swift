@@ -53,6 +53,8 @@ final class ChatViewModel {
     @ObservationIgnored private let authenticator: any WebAuthenticating
     /// The running turn (and any sign-in it leads to). Tests await it.
     @ObservationIgnored private(set) var currentTask: Task<Void, Never>?
+    /// A sign-in that succeeded while a turn was still streaming; resumed once the turn is idle.
+    @ObservationIgnored private var pendingResumeProvider: String?
 
     private static let log = Logger(subsystem: "com.aaronw122.oyster", category: "chat")
 
@@ -113,11 +115,13 @@ final class ChatViewModel {
         currentTask = nil
         isStreaming = false
         status = nil
+        resumePendingSignIn()
     }
 
     /// Clears the transcript and forgets the server-side conversation; the next
     /// message starts a fresh one.
     func newConversation() {
+        pendingResumeProvider = nil
         cancel()
         rows = []
         draft = ""
@@ -146,14 +150,27 @@ final class ChatViewModel {
     }
 
     /// Handles `oyster://oauth/complete?...` — from the sign-in sheet or an opened URL.
+    ///
+    /// Both deliver the same callback, so a success is only accepted while its sign-in
+    /// row is still pending: the first delivery consumes the row and later ones are ignored.
     func handleOAuthCallback(_ url: URL) {
         guard let callback = OAuthCallback(url: url) else { return }
-        markSignInFinished(provider: callback.provider)
-        if callback.succeeded {
-            send("I've signed in to \(ProviderName.display(for: callback.provider)).")
-        } else {
+        guard callback.succeeded else {
+            markSignInFinished(provider: callback.provider)
             rows.append(ChatRow(.signInFailed(provider: callback.provider)))
+            return
         }
+        guard hasPendingSignIn(provider: callback.provider) else { return }
+        markSignInFinished(provider: callback.provider)
+        pendingResumeProvider = callback.provider
+        if !isStreaming { resumePendingSignIn() }
+    }
+
+    /// Tells the assistant about a completed sign-in, once, when no turn is running.
+    private func resumePendingSignIn() {
+        guard let provider = pendingResumeProvider, canSend else { return }
+        pendingResumeProvider = nil
+        send("I've signed in to \(ProviderName.display(for: provider)).")
     }
 
     // MARK: - Streaming
@@ -174,8 +191,10 @@ final class ChatViewModel {
         guard !Task.isCancelled else { return }
         isStreaming = false
         status = nil
-        // The stream ends right after `oauth`; sign in once the turn is over.
-        if let signIn {
+        resumePendingSignIn()
+        // The stream ends right after `oauth`; sign in once the turn is over — unless the
+        // callback already arrived (via an opened URL) while the turn was streaming.
+        if !isStreaming, let signIn, pendingSignInProvider(for: signIn) != nil {
             await presentSignIn(url: signIn)
         }
     }
@@ -240,6 +259,13 @@ final class ChatViewModel {
             if case .signIn(let provider, let rowURL) = row.kind, rowURL == url { return provider }
         }
         return nil
+    }
+
+    private func hasPendingSignIn(provider: String) -> Bool {
+        rows.contains { row in
+            if case .signIn(let rowProvider, _) = row.kind { return rowProvider == provider }
+            return false
+        }
     }
 
     /// Once a sign-in completes (either way) its row no longer offers the button.
