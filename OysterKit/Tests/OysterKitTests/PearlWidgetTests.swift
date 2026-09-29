@@ -6,14 +6,7 @@ import Testing
 private let pearlId = "pearl_01J8ZQ4K7M3CITIBIKE"
 
 private func freshData(_ size: Size, value: String = "fresh", stale: Bool = false) -> PearlData {
-    PearlData(
-        pearlId: pearlId,
-        version: 3,
-        size: size,
-        output: WidgetOutput(value: value),
-        updatedAt: Date(timeIntervalSince1970: 1_790_000_000),
-        stale: stale
-    )
+    makePearlData(pearlId, size, value: value, stale: stale)
 }
 
 /// Any request on a session this protocol is installed in is recorded as a test failure.
@@ -39,20 +32,19 @@ final class NetworkTripwire: URLProtocol, @unchecked Sendable {
 }
 
 @Suite(.serialized) final class PearlWidgetTests {
-    private let root = FileManager.default.temporaryDirectory
-        .appending(component: "PearlWidgetTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+    private let temp = TemporaryDirectory()
     private let disk: PearlDiskStore
 
     init() throws {
-        disk = PearlDiskStore(directory: root)
+        disk = PearlDiskStore(directory: temp.url)
         try disk.replaceAll([
             PearlSummary(id: "pearl_other", name: "Morning train"),
             PearlSummary(id: pearlId, name: "Citi Bike near work"),
         ])
     }
 
-    deinit {
-        try? FileManager.default.removeItem(at: root)
+    private func makeLoader(_ server: StubServer) -> PearlEntryLoader {
+        PearlEntryLoader(disk: disk, config: server.config, session: server.session)
     }
 
     private func unexpectedServer() -> StubServer {
@@ -67,11 +59,7 @@ final class NetworkTripwire: URLProtocol, @unchecked Sendable {
     @Test func chosenPearlFetchesAndSavesToDisk() async throws {
         let body = try Fixture.data("pearl-data.small.json")
         let server = StubServer(basePath: "/api") { _ in .json(200, body) }
-        let loader = PearlEntryLoader(
-            disk: disk,
-            config: ServerConfig(baseURL: server.baseURL, token: "tok"),
-            session: server.session
-        )
+        let loader = makeLoader(server)
 
         let content = await loader.load(pearlId: pearlId, size: .small)
 
@@ -90,39 +78,22 @@ final class NetworkTripwire: URLProtocol, @unchecked Sendable {
     @Test func networkFailureFallsBackToDiskMarkedStale() async throws {
         try disk.saveData(freshData(.rectangular, value: "last good"))
         let server = StubServer { _ in .json(503, Data()) }
-        let loader = PearlEntryLoader(
-            disk: disk,
-            config: ServerConfig(baseURL: server.baseURL, token: "tok"),
-            session: server.session
-        )
+        let loader = makeLoader(server)
 
         let content = await loader.load(pearlId: pearlId, size: .rectangular)
 
         #expect(content == .pearl(freshData(.rectangular, value: "last good", stale: true)))
-        #expect(content.stale)
         #expect(content.output(for: .rectangular).value == "last good")
     }
 
-    @Test func pearlDeletedOnServerAsksToChooseEvenWithDiskData() async throws {
+    /// A deleted Pearl (404) asks to choose; a revoked token (401) opens Oyster.
+    /// Neither falls back to the last-good data on disk.
+    @Test(arguments: [(404, true), (401, false)])
+    func definitiveServerErrorIgnoresDiskData(status: Int, choosePearl: Bool) async throws {
         try disk.saveData(freshData(.small))
-        let server = StubServer { _ in .json(404, Data()) }
-        let loader = PearlEntryLoader(
-            disk: disk,
-            config: ServerConfig(baseURL: server.baseURL, token: "tok"),
-            session: server.session
-        )
-        #expect(await loader.load(pearlId: pearlId, size: .small) == .choosePearl)
-    }
-
-    @Test func revokedTokenOpensOysterEvenWithDiskData() async throws {
-        try disk.saveData(freshData(.small))
-        let server = StubServer { _ in .json(401, Data()) }
-        let loader = PearlEntryLoader(
-            disk: disk,
-            config: ServerConfig(baseURL: server.baseURL, token: "tok"),
-            session: server.session
-        )
-        #expect(await loader.load(pearlId: pearlId, size: .small) == .openOyster)
+        let server = StubServer { _ in .json(status, Data()) }
+        let content = await makeLoader(server).load(pearlId: pearlId, size: .small)
+        #expect(content == (choosePearl ? .choosePearl : .openOyster))
     }
 
     @Test func transportFailureWithoutDiskDataOpensOyster() async {
@@ -140,11 +111,7 @@ final class NetworkTripwire: URLProtocol, @unchecked Sendable {
 
     @Test func noPearlChosenAsksToChooseWithoutFetching() async {
         let server = unexpectedServer()
-        let loader = PearlEntryLoader(
-            disk: disk,
-            config: ServerConfig(baseURL: server.baseURL, token: "tok"),
-            session: server.session
-        )
+        let loader = makeLoader(server)
         #expect(await loader.load(pearlId: nil, size: .inline) == .choosePearl)
         #expect(server.requests.isEmpty)
     }
@@ -153,11 +120,7 @@ final class NetworkTripwire: URLProtocol, @unchecked Sendable {
         try disk.saveData(freshData(.small))
         try disk.remove(id: pearlId)
         let server = unexpectedServer()
-        let loader = PearlEntryLoader(
-            disk: disk,
-            config: ServerConfig(baseURL: server.baseURL, token: "tok"),
-            session: server.session
-        )
+        let loader = makeLoader(server)
         #expect(await loader.load(pearlId: pearlId, size: .small) == .choosePearl)
         #expect(loader.cached(pearlId: pearlId, size: .small) == nil)
         #expect(server.requests.isEmpty)

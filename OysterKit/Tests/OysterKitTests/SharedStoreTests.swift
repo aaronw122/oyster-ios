@@ -54,17 +54,13 @@ private struct Sample: Codable, Equatable, Sendable {
         #expect(store.get(b) == 2)
     }
 
-    @Test func garbageDataReturnsNil() {
+    @Test func unreadableValuesReturnNil() throws {
         defaults.set(Data("not json".utf8), forKey: "garbage")
         #expect(store.get(StoreKey<Sample>("garbage")) == nil)
-    }
 
-    @Test func typeMismatchReturnsNil() throws {
         try store.set("a string", for: StoreKey<String>("mismatch"))
         #expect(store.get(StoreKey<Sample>("mismatch")) == nil)
-    }
 
-    @Test func nonDataValueReturnsNil() {
         defaults.set("plain string written by someone else", forKey: "foreign")
         #expect(store.get(StoreKey<String>("foreign")) == nil)
     }

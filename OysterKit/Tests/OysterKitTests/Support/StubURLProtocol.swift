@@ -1,5 +1,6 @@
 import Foundation
 import os
+@testable import OysterKit
 
 /// A canned HTTP response, delivered to the client as the given chunks.
 struct StubResponse: Sendable {
@@ -53,6 +54,14 @@ final class StubServer: Sendable {
 
     var requests: [URLRequest] { state.withLock { $0.requests } }
     var stopped: Bool { state.withLock { $0.stopped } }
+
+    static let token = "tok_test_123"
+
+    /// A config pointing at this server, authenticated with `token`.
+    var config: ServerConfig { ServerConfig(baseURL: baseURL, token: Self.token) }
+
+    /// A client that talks to this server.
+    func apiClient() -> APIClient { APIClient(config: config, session: session) }
 }
 
 final class StubURLProtocol: URLProtocol, @unchecked Sendable {

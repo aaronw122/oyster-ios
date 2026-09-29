@@ -5,28 +5,13 @@ import Testing
 /// ENSURE-3b: native layouts render max-length data without clipping.
 ///
 /// Each shown string of `widget-output.max.<size>.json` (every field at its §2b
-/// code-point budget) is measured at its ideal single-line width — full size,
+/// code-point budget, pinned by `SizeBudgetTests.maxFixtureFillsEveryBudgetExactly`)
+/// is measured at its ideal single-line width — full size,
 /// before any `minimumScaleFactor` — and must fit the width its layout gives it
 /// inside the canonical (smallest device) frame. The stacked content must also
 /// fit the frame's height.
 @MainActor
 @Suite struct LayoutFitTests {
-    @Test(arguments: Size.allCases)
-    func maxFixtureFitsBudgets(size: Size) throws {
-        // Guard: the fixture really is at the budget, or the fit proof is hollow.
-        let output = try LayoutFixtures.max(size)
-        #expect(SizeBudgets.fits(output, size: size).isEmpty)
-        let budget = SizeBudgets[size]
-        #expect(output.value.codePointCount == budget.value)
-        if let limit = budget.subtitle { #expect(output.subtitle?.codePointCount == limit) }
-        if let limits = budget.items {
-            let items = try #require(output.items)
-            #expect(items.count == limits.max)
-            #expect(items.contains { $0.label.codePointCount == limits.label })
-            #expect(items.contains { $0.value?.codePointCount == limits.value })
-        }
-    }
-
     @Test(arguments: Size.allCases)
     func everyStringSetsOnOneLineUnscaled(size: Size) throws {
         let output = try LayoutFixtures.max(size).projected(for: size)

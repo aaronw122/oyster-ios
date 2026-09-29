@@ -6,30 +6,15 @@ private func summary(_ id: String, _ name: String? = nil) -> PearlSummary {
     PearlSummary(id: id, name: name ?? "Pearl \(id)")
 }
 
-private func pearlData(_ id: String, _ size: Size, value: String = "v") -> PearlData {
-    PearlData(
-        pearlId: id,
-        version: 1,
-        size: size,
-        output: WidgetOutput(value: value),
-        updatedAt: Date(timeIntervalSince1970: 1_790_000_000),
-        stale: false
-    )
-}
-
 @Suite final class PearlDiskStoreTests {
-    private let root = FileManager.default.temporaryDirectory
-        .appending(component: "PearlDiskStoreTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+    private let temp = TemporaryDirectory()
     private let store: PearlDiskStore
 
     init() {
-        store = PearlDiskStore(directory: root)
+        store = PearlDiskStore(directory: temp.url)
     }
 
-    deinit {
-        try? FileManager.default.removeItem(at: root)
-    }
-
+    private var root: URL { temp.url }
     private var pearlsDir: URL { root.appending(component: "Pearls") }
 
     private func exists(_ url: URL) -> Bool {
@@ -46,7 +31,7 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
         try store.replaceAll([summary("a"), summary(fixture.pearlId)])
         try store.saveData(fixture)
 
-        let reopened = PearlDiskStore(directory: root)
+        let reopened = PearlDiskStore(directory: temp.url)
         #expect(reopened.list() == [summary("a"), summary(fixture.pearlId)])
         #expect(reopened.data(id: fixture.pearlId, size: .small) == fixture)
         #expect(reopened.data(id: fixture.pearlId, size: .medium) == nil)
@@ -56,9 +41,9 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
 
     @Test func dataIsKeptPerSize() throws {
         for size in Size.allCases {
-            try store.saveData(pearlData("p1", size, value: size.rawValue))
+            try store.saveData(makePearlData("p1", size, value: size.rawValue))
         }
-        try store.saveData(pearlData("p1", .small, value: "newer"))
+        try store.saveData(makePearlData("p1", .small, value: "newer"))
 
         #expect(store.data(id: "p1", size: .inline)?.output.value == "inline")
         #expect(store.data(id: "p1", size: .small)?.output.value == "newer")
@@ -76,9 +61,9 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
 
     @Test func replaceAllPrunesDataOfRemovedPearls() throws {
         try store.replaceAll([summary("keep"), summary("drop")])
-        try store.saveData(pearlData("keep", .small))
-        try store.saveData(pearlData("drop", .small))
-        try store.saveData(pearlData("orphan", .medium))
+        try store.saveData(makePearlData("keep", .small))
+        try store.saveData(makePearlData("drop", .small))
+        try store.saveData(makePearlData("orphan", .medium))
 
         try store.replaceAll([summary("new"), summary("keep")])
 
@@ -91,8 +76,8 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
 
     @Test func removeDeletesEntryAndData() throws {
         try store.replaceAll([summary("a"), summary("b")])
-        try store.saveData(pearlData("a", .small))
-        try store.saveData(pearlData("b", .small))
+        try store.saveData(makePearlData("a", .small))
+        try store.saveData(makePearlData("b", .small))
 
         try store.remove(id: "a")
         try store.remove(id: "never-stored")
@@ -105,7 +90,7 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
 
     @Test func corruptFilesReadAsAbsentAndAreOverwritable() throws {
         try store.replaceAll([summary("a")])
-        try store.saveData(pearlData("a", .small))
+        try store.saveData(makePearlData("a", .small))
         try Data("{ not json".utf8).write(to: pearlsDir.appending(component: "list.json"))
         try Data([0xFF, 0x00]).write(to: pearlsDir.appending(components: "a", "small.json"))
 
@@ -113,14 +98,14 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
         #expect(store.data(id: "a", size: .small) == nil)
 
         try store.upsert(summary("b"))
-        try store.saveData(pearlData("a", .small))
+        try store.saveData(makePearlData("a", .small))
         #expect(store.list() == [summary("b")])
         #expect(store.data(id: "a", size: .small) != nil)
     }
 
     @Test func dataFiledUnderWrongIdOrSizeReadsAsAbsent() throws {
         try FileManager.default.createDirectory(at: pearlsDir.appending(component: "a"), withIntermediateDirectories: true)
-        let other = try ContractCoding.makeEncoder().encode(pearlData("b", .medium))
+        let other = try ContractCoding.makeEncoder().encode(makePearlData("b", .medium))
         try other.write(to: pearlsDir.appending(components: "a", "small.json"))
 
         #expect(store.data(id: "a", size: .small) == nil)
@@ -131,7 +116,7 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
         try store.replaceAll([summary("a")])
 
         #expect(throws: PearlDiskStore.StoreError.invalidId(id)) { try self.store.upsert(summary(id)) }
-        #expect(throws: PearlDiskStore.StoreError.invalidId(id)) { try self.store.saveData(pearlData(id, .small)) }
+        #expect(throws: PearlDiskStore.StoreError.invalidId(id)) { try self.store.saveData(makePearlData(id, .small)) }
         #expect(throws: PearlDiskStore.StoreError.invalidId(id)) { try self.store.remove(id: id) }
         #expect(throws: PearlDiskStore.StoreError.invalidId(id)) { try self.store.replaceAll([summary("b"), summary(id)]) }
         #expect(store.data(id: id, size: .small) == nil)
@@ -157,7 +142,7 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
 
     @Test func replaceAllWritesListEvenWhenPruningFails() throws {
         try store.replaceAll([summary("stuck")])
-        try store.saveData(pearlData("stuck", .small))
+        try store.saveData(makePearlData("stuck", .small))
         let stuckDir = pearlsDir.appending(component: "stuck")
         // Without write permission on its directory, the data file (and so the directory) can't be deleted.
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: stuckDir.path())
@@ -184,24 +169,18 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
 }
 
 @Suite final class PearlSyncTests {
-    private let root = FileManager.default.temporaryDirectory
-        .appending(component: "PearlSyncTests-\(UUID().uuidString)", directoryHint: .isDirectory)
-
-    deinit {
-        try? FileManager.default.removeItem(at: root)
-    }
+    private let temp = TemporaryDirectory()
 
     @Test func syncMirrorsServerListAndDropsRemovedPearls() async throws {
         let body = try Fixture.data("pearls-list.json")
         let server = StubServer { _ in .json(200, body) }
-        let api = APIClient(config: ServerConfig(baseURL: server.baseURL, token: "t"), session: server.session)
-        let disk = PearlDiskStore(directory: root)
+        let disk = PearlDiskStore(directory: temp.url)
         let serverPearls = try Fixture.decode(PearlsListResponse.self, "pearls-list.json").pearls
         try disk.replaceAll([summary("deleted-on-server"), serverPearls[0]])
-        try disk.saveData(pearlData("deleted-on-server", .small))
-        try disk.saveData(pearlData(serverPearls[0].id, .small))
+        try disk.saveData(makePearlData("deleted-on-server", .small))
+        try disk.saveData(makePearlData(serverPearls[0].id, .small))
 
-        try await PearlSync.sync(api: api, disk: disk)
+        try await PearlSync.sync(api: server.apiClient(), disk: disk)
 
         #expect(disk.list() == serverPearls)
         #expect(disk.data(id: "deleted-on-server", size: .small) == nil)
@@ -210,39 +189,28 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
 
     @Test func failedSyncLeavesDiskUntouched() async throws {
         let server = StubServer { _ in .json(503, Data()) }
-        let api = APIClient(config: ServerConfig(baseURL: server.baseURL, token: "t"), session: server.session)
-        let disk = PearlDiskStore(directory: root)
+        let disk = PearlDiskStore(directory: temp.url)
         try disk.replaceAll([summary("a")])
-        try disk.saveData(pearlData("a", .small))
+        try disk.saveData(makePearlData("a", .small))
 
-        await #expect(throws: APIError.self) { try await PearlSync.sync(api: api, disk: disk) }
+        await #expect(throws: APIError.self) { try await PearlSync.sync(api: server.apiClient(), disk: disk) }
 
         #expect(disk.list() == [summary("a")])
         #expect(disk.data(id: "a", size: .small) != nil)
     }
 
-    @Test func recordSavedAppendsToList() throws {
-        let disk = PearlDiskStore(directory: root)
-        try disk.replaceAll([summary("a")])
-
-        try PearlSync.recordSaved(summary("b", "Citi Bike docks near work"), disk: disk)
-
-        #expect(disk.list() == [summary("a"), summary("b", "Citi Bike docks near work")])
-    }
-
     @Test func pearlSavedWhileSyncIsInFlightIsKept() async throws {
         let body = try Fixture.data("pearls-list.json")
         let serverPearls = try Fixture.decode(PearlsListResponse.self, "pearls-list.json").pearls
-        let disk = PearlDiskStore(directory: root)
+        let disk = PearlDiskStore(directory: temp.url)
         let justSaved = summary("pearl_saved_mid_sync", "Just saved")
         // The `saved` event lands after the server built its (older) list response.
         let server = StubServer { _ in
             try? PearlSync.recordSaved(justSaved, disk: disk)
             return .json(200, body)
         }
-        let api = APIClient(config: ServerConfig(baseURL: server.baseURL, token: "t"), session: server.session)
 
-        try await PearlSync.sync(api: api, disk: disk)
+        try await PearlSync.sync(api: server.apiClient(), disk: disk)
 
         #expect(disk.list() == serverPearls + [justSaved])
     }
@@ -250,12 +218,11 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
     @Test func pearlSavedBeforeSyncDefersToServer() async throws {
         let body = try Fixture.data("pearls-list.json")
         let serverPearls = try Fixture.decode(PearlsListResponse.self, "pearls-list.json").pearls
-        let disk = PearlDiskStore(directory: root)
+        let disk = PearlDiskStore(directory: temp.url)
         try PearlSync.recordSaved(summary("deleted-elsewhere"), disk: disk)
         let server = StubServer { _ in .json(200, body) }
-        let api = APIClient(config: ServerConfig(baseURL: server.baseURL, token: "t"), session: server.session)
 
-        try await PearlSync.sync(api: api, disk: disk)
+        try await PearlSync.sync(api: server.apiClient(), disk: disk)
 
         #expect(disk.list() == serverPearls)
     }

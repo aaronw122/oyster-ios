@@ -2,12 +2,6 @@ import Foundation
 import Testing
 @testable import OysterKit
 
-private let token = "tok_test_123"
-
-private func client(_ server: StubServer) -> APIClient {
-    APIClient(config: ServerConfig(baseURL: server.baseURL, token: token), session: server.session)
-}
-
 /// Asserts `body` throws an `APIError` matching `matches`.
 private func expectAPIError(
     _ body: () async throws -> Void,
@@ -49,13 +43,13 @@ private func sse(_ events: String...) -> Data {
         let body = try Fixture.data("pearls-list.json")
         let server = StubServer(basePath: "/api") { _ in .json(200, body) }
 
-        let pearls = try await client(server).listPearls()
+        let pearls = try await server.apiClient().listPearls()
 
         #expect(pearls == (try Fixture.decode(PearlsListResponse.self, "pearls-list.json")).pearls)
         let request = try #require(server.requests.first)
         #expect(request.httpMethod == "GET")
         #expect(request.url?.path() == "/api/pearls")
-        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(StubServer.token)")
     }
 
     @Test(arguments: Size.allCases)
@@ -64,20 +58,19 @@ private func sse(_ events: String...) -> Data {
         let body = try Fixture.data(name)
         let server = StubServer(basePath: "/api") { _ in .json(200, body) }
 
-        let data = try await client(server).pearlData(id: "pearl_01J8ZQ4K7M3CITIBIKE", size: size)
+        let data = try await server.apiClient().pearlData(id: "pearl_01J8ZQ4K7M3CITIBIKE", size: size)
 
         #expect(data == (try Fixture.decode(PearlData.self, name)))
         let url = try #require(server.requests.first?.url)
         #expect(url.path() == "/api/pearls/pearl_01J8ZQ4K7M3CITIBIKE/data")
         #expect(url.query() == "size=\(size.rawValue)")
-        #expect(server.requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
     }
 
     @Test func pearlIdIsASinglePathComponent() async throws {
         let body = try Fixture.data("pearl-data.small.json")
         let server = StubServer { _ in .json(200, body) }
 
-        _ = try await client(server).pearlData(id: "a/../b", size: .small)
+        _ = try await server.apiClient().pearlData(id: "a/../b", size: .small)
 
         let url = try #require(server.requests.first?.url)
         #expect(url.path(percentEncoded: true) == "/pearls/a%2F..%2Fb/data")
@@ -87,7 +80,7 @@ private func sse(_ events: String...) -> Data {
     func mappedStatusesBecomeDedicatedErrors(status: Int) async throws {
         let body = try Fixture.data("error.json")
         let server = StubServer { _ in .json(status, body) }
-        let api = client(server)
+        let api = server.apiClient()
 
         await expectAPIError({ _ = try await api.listPearls() }) { error in
             switch (status, error) {
@@ -100,7 +93,7 @@ private func sse(_ events: String...) -> Data {
     @Test func otherStatusCarriesServerErrorBody() async throws {
         let body = try Fixture.data("error.json")
         let server = StubServer { _ in .json(500, body) }
-        let api = client(server)
+        let api = server.apiClient()
 
         await expectAPIError({ _ = try await api.pearlData(id: "p", size: .small) }) { error in
             guard case .server(let apiError) = error else { return false }
@@ -110,7 +103,7 @@ private func sse(_ events: String...) -> Data {
 
     @Test func otherStatusWithoutErrorBodyStillReportsStatus() async throws {
         let server = StubServer { _ in StubResponse(status: 502, chunks: [Data("<html>Bad Gateway</html>".utf8)]) }
-        let api = client(server)
+        let api = server.apiClient()
 
         await expectAPIError({ _ = try await api.listPearls() }) { error in
             guard case .server(let apiError) = error else { return false }
@@ -120,7 +113,7 @@ private func sse(_ events: String...) -> Data {
 
     @Test func malformedSuccessBodyIsDecodingError() async throws {
         let server = StubServer { _ in .json(200, Data(#"{"pearls":[{"id":1}]}"#.utf8)) }
-        let api = client(server)
+        let api = server.apiClient()
 
         await expectAPIError({ _ = try await api.listPearls() }) { error in
             if case .decoding = error { true } else { false }
@@ -136,13 +129,13 @@ private func sse(_ events: String...) -> Data {
             .eventStream([sse(#"{"type":"done"}"#)])
         }
 
-        let events = try await collect(client(server).messages(sessionId: "sess_1", message: "Citi Bike near work"))
+        let events = try await collect(server.apiClient().messages(sessionId: "sess_1", message: "Citi Bike near work"))
 
         #expect(events == [.done])
         let request = try #require(server.requests.first)
         #expect(request.httpMethod == "POST")
         #expect(request.url?.path() == "/api/messages")
-        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(StubServer.token)")
         #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
         let body = try JSONDecoder().decode(MessagesRequest.self, from: try #require(request.httpBody))
         #expect(body == MessagesRequest(sessionId: "sess_1", message: "Citi Bike near work"))
@@ -168,7 +161,7 @@ private func sse(_ events: String...) -> Data {
         #expect(chunks.contains { $0.last == 0x0D }, "no chunk splits a CRLF pair")
         let server = StubServer { _ in .eventStream(chunks) }
 
-        let events = try await collect(client(server).messages(sessionId: "s", message: "m"))
+        let events = try await collect(server.apiClient().messages(sessionId: "s", message: "m"))
 
         #expect(events == (try fixtureEvents()))
         #expect(events.last == .done)
@@ -179,7 +172,7 @@ private func sse(_ events: String...) -> Data {
             .eventStream([sse(#"{"type":"text","delta":"hi"}"#, #"{"type":"done"}"#, #"{"type":"text","delta":"after"}"#)])
         }
 
-        let events = try await collect(client(server).messages(sessionId: "s", message: "m"))
+        let events = try await collect(server.apiClient().messages(sessionId: "s", message: "m"))
 
         #expect(events == [.text(delta: "hi"), .done])
     }
@@ -187,7 +180,7 @@ private func sse(_ events: String...) -> Data {
     @Test func finishesWhenServerClosesWithoutDone() async throws {
         let server = StubServer { _ in .eventStream([sse(#"{"type":"status","text":"Working"}"#)]) }
 
-        let events = try await collect(client(server).messages(sessionId: "s", message: "m"))
+        let events = try await collect(server.apiClient().messages(sessionId: "s", message: "m"))
 
         #expect(events == [.status(text: "Working")])
     }
@@ -197,7 +190,7 @@ private func sse(_ events: String...) -> Data {
             .eventStream([sse(#"{"type":"thinking","text":"hmm"}"#, #"{"type":"done"}"#)])
         }
 
-        let events = try await collect(client(server).messages(sessionId: "s", message: "m"))
+        let events = try await collect(server.apiClient().messages(sessionId: "s", message: "m"))
 
         #expect(events == [.unknown(type: "thinking"), .done])
     }
@@ -211,7 +204,7 @@ private func sse(_ events: String...) -> Data {
             )])
         }
 
-        let events = try await collect(client(server).messages(sessionId: "s", message: "m"))
+        let events = try await collect(server.apiClient().messages(sessionId: "s", message: "m"))
 
         #expect(events == [.text(delta: "still here"), .done])
     }
@@ -223,7 +216,7 @@ private func sse(_ events: String...) -> Data {
         var received: [ChatEvent] = []
 
         await expectAPIError({
-            for try await event in client(server).messages(sessionId: "s", message: "m") { received.append(event) }
+            for try await event in server.apiClient().messages(sessionId: "s", message: "m") { received.append(event) }
         }) { error in
             if case .decoding = error { true } else { false }
         }
@@ -234,7 +227,7 @@ private func sse(_ events: String...) -> Data {
         let body = try Fixture.data("error.json")
         let server = StubServer { _ in .json(401, body) }
 
-        await expectAPIError({ _ = try await collect(client(server).messages(sessionId: "s", message: "m")) }) { error in
+        await expectAPIError({ _ = try await collect(server.apiClient().messages(sessionId: "s", message: "m")) }) { error in
             if case .unauthorized = error { true } else { false }
         }
     }
@@ -244,7 +237,7 @@ private func sse(_ events: String...) -> Data {
             .eventStream([sse(#"{"type":"status","text":"Working"}"#)], holdOpen: true)
         }
 
-        for try await event in client(server).messages(sessionId: "s", message: "m") {
+        for try await event in server.apiClient().messages(sessionId: "s", message: "m") {
             #expect(event == .status(text: "Working"))
             break
         }

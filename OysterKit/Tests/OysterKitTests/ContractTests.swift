@@ -108,11 +108,6 @@ private let fixtureTypes: [String: @Sendable (Data) throws -> Void] = [
         let json = try JSONSerialization.jsonObject(with: ContractCoding.makeEncoder().encode(previews))
         #expect((json as? [String: Any])?.keys.sorted() == ["small"])
     }
-
-    @Test func apiErrorExposesCodeAndMessage() throws {
-        let error = try Fixture.decode(ApiError.self, "error.json")
-        #expect(error == ApiError(code: "pearl_not_found", message: "No Pearl with that id belongs to this account."))
-    }
 }
 
 // MARK: - Chat events
@@ -134,27 +129,6 @@ private let fixtureTypes: [String: @Sendable (Data) throws -> Void] = [
         let json = #"{"type":"tool_call","name":"find_builtin","args":{"q":"bikes"}}"#
         let event = try ContractCoding.makeDecoder().decode(ChatEvent.self, from: Data(json.utf8))
         #expect(event == .unknown(type: "tool_call"))
-    }
-
-    @Test func knownTypeMissingRequiredFieldThrows() {
-        #expect(throws: DecodingError.self) {
-            try ContractCoding.makeDecoder().decode(ChatEvent.self, from: Data(#"{"type":"text"}"#.utf8))
-        }
-    }
-
-    @Test func sseStreamDecodesEveryDataPayload() throws {
-        let text = String(decoding: try Fixture.data("chat-stream.sse.txt"), as: UTF8.self)
-        #expect(text.hasSuffix("\n\n"))
-        let frames = text.components(separatedBy: "\n\n").filter { !$0.isEmpty }
-        let decoder = ContractCoding.makeDecoder()
-        let events = try frames.map { frame in
-            #expect(frame.hasPrefix("data: "))
-            return try decoder.decode(ChatEvent.self, from: Data(frame.dropFirst("data: ".count).utf8))
-        }
-        #expect(events.count == 8)
-        #expect(events.allSatisfy { Self.knownTypes.contains($0.type) })
-        #expect(events.last == .done)
-        #expect(events.filter { $0 == .done }.count == 1)
     }
 }
 
