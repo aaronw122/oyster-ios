@@ -8,9 +8,13 @@ import WidgetKit
 public enum PearlSync {
     /// `GET /pearls` → replace the on-device list (dropping data of removed
     /// Pearls) → reload widget timelines.
+    ///
+    /// A Pearl recorded via `recordSaved` while the request is in flight is kept
+    /// even if the fetched list predates it.
     public static func sync(api: APIClient, disk: PearlDiskStore) async throws {
+        let checkpoint = disk.checkpoint()
         let pearls = try await api.listPearls()
-        try disk.replaceAll(pearls)
+        try disk.replaceAll(pearls, keepingUpsertsSince: checkpoint)
         reloadWidgets()
     }
 

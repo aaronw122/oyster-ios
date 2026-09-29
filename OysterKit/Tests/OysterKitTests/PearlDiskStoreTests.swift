@@ -141,6 +141,34 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
         #expect(try FileManager.default.contentsOfDirectory(atPath: pearlsDir.path()) == ["list.json"])
     }
 
+    @Test func replaceAllKeepsUpsertsMadeAfterCheckpoint() throws {
+        try store.replaceAll([summary("a"), summary("b")])
+        try store.upsert(summary("before"))
+        let checkpoint = store.checkpoint()
+        try store.upsert(summary("new"))
+        try store.upsert(summary("a", "Renamed"))
+        try store.upsert(summary("deleted"))
+        try store.remove(id: "deleted")
+
+        try store.replaceAll([summary("a"), summary("b")], keepingUpsertsSince: checkpoint)
+
+        #expect(store.list() == [summary("a", "Renamed"), summary("b"), summary("new")])
+    }
+
+    @Test func replaceAllWritesListEvenWhenPruningFails() throws {
+        try store.replaceAll([summary("stuck")])
+        try store.saveData(pearlData("stuck", .small))
+        let stuckDir = pearlsDir.appending(component: "stuck")
+        // Without write permission on its directory, the data file (and so the directory) can't be deleted.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: stuckDir.path())
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stuckDir.path()) }
+
+        try store.replaceAll([summary("other")])
+
+        #expect(store.list() == [summary("other")])
+        #expect(exists(stuckDir))
+    }
+
     @Test func concurrentUpsertsAreAllKept() async throws {
         let store = self.store
         let ids = (0..<50).map { "p\($0)" }
@@ -200,6 +228,36 @@ private func pearlData(_ id: String, _ size: Size, value: String = "v") -> Pearl
         try PearlSync.recordSaved(summary("b", "Citi Bike docks near work"), disk: disk)
 
         #expect(disk.list() == [summary("a"), summary("b", "Citi Bike docks near work")])
+    }
+
+    @Test func pearlSavedWhileSyncIsInFlightIsKept() async throws {
+        let body = try Fixture.data("pearls-list.json")
+        let serverPearls = try Fixture.decode(PearlsListResponse.self, "pearls-list.json").pearls
+        let disk = PearlDiskStore(directory: root)
+        let justSaved = summary("pearl_saved_mid_sync", "Just saved")
+        // The `saved` event lands after the server built its (older) list response.
+        let server = StubServer { _ in
+            try? PearlSync.recordSaved(justSaved, disk: disk)
+            return .json(200, body)
+        }
+        let api = APIClient(config: ServerConfig(baseURL: server.baseURL, token: "t"), session: server.session)
+
+        try await PearlSync.sync(api: api, disk: disk)
+
+        #expect(disk.list() == serverPearls + [justSaved])
+    }
+
+    @Test func pearlSavedBeforeSyncDefersToServer() async throws {
+        let body = try Fixture.data("pearls-list.json")
+        let serverPearls = try Fixture.decode(PearlsListResponse.self, "pearls-list.json").pearls
+        let disk = PearlDiskStore(directory: root)
+        try PearlSync.recordSaved(summary("deleted-elsewhere"), disk: disk)
+        let server = StubServer { _ in .json(200, body) }
+        let api = APIClient(config: ServerConfig(baseURL: server.baseURL, token: "t"), session: server.session)
+
+        try await PearlSync.sync(api: api, disk: disk)
+
+        #expect(disk.list() == serverPearls)
     }
 }
 
