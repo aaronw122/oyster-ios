@@ -44,6 +44,13 @@ public actor APIClient {
         return try await send(request, as: PearlData.self)
     }
 
+    /// `POST /oauth/:provider/link`: a fresh start URL for re-opening a sign-in.
+    /// Start URLs are single-use, so a dismissed or expired one can't be presented again.
+    public func oauthLink(provider: String) async throws -> URL {
+        let request = makeRequest(path: ["oauth", provider, "link"], method: "POST")
+        return try await send(request, as: OAuthLinkResponse.self).url
+    }
+
     /// `POST /messages`, streamed as `ChatEvent`s.
     ///
     /// The stream yields events in arrival order and finishes after `.done` (which

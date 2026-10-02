@@ -1,3 +1,5 @@
+import Foundation
+
 /// Error body returned by every failing endpoint: `{ "error": { "code", "message" } }`.
 public struct ApiError: Error, Codable, Equatable, Sendable {
     public var code: String
@@ -43,6 +45,15 @@ public struct MessagesRequest: Codable, Equatable, Sendable {
     public init(sessionId: String, message: String) {
         self.sessionId = sessionId
         self.message = message
+    }
+}
+
+/// `POST /oauth/:provider/link` response: a fresh, single-use sign-in start URL.
+public struct OAuthLinkResponse: Codable, Sendable, Equatable {
+    public let url: URL
+
+    public init(url: URL) {
+        self.url = url
     }
 }
 

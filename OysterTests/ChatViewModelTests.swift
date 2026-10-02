@@ -138,9 +138,11 @@ import Testing
         #expect(service.sent.last?.message == "Let's try signing in to GitHub again.")
     }
 
-    @Test func cancelledSignInIsSilentAndCanBeReopened() async throws {
+    @Test func cancelledSignInIsSilentAndReopensWithAFreshLink() async throws {
         let url = try #require(URL(string: "https://oyster.example.com/oauth/strava/start?state=abc"))
+        let fresh = try #require(URL(string: "https://oyster.example.com/oauth/strava/start?state=def"))
         service.script(.init(events: [.oauth(provider: "strava", url: url.absoluteString), .done]))
+        service.links = [.success(fresh)]
         authenticator.result = .success(nil)
         let model = makeModel()
 
@@ -149,12 +151,88 @@ import Testing
 
         #expect(model.rows.last?.kind == .signIn(provider: "strava", url: url))
         #expect(service.sent.count == 1)
+        #expect(service.linkRequests.isEmpty)
 
         authenticator.result = .success(URL(string: "oyster://oauth/complete?provider=strava&status=ok"))
-        model.signIn(url: url)
+        model.signIn(provider: "strava")
         await model.settle()
-        #expect(authenticator.requests.count == 2)
+        // The first URL was spent when it was presented; the reopen presents the fresh one.
+        #expect(service.linkRequests == ["strava"])
+        #expect(authenticator.requests.map(\.url) == [url, fresh])
         #expect(service.sent.last?.message == "I've signed in to Strava.")
+    }
+
+    @Test func reopenWhoseLinkFailsShowsTheFailedSignInRow() async throws {
+        let url = try #require(URL(string: "https://oyster.example.com/oauth/github/start?state=abc"))
+        service.script(.init(events: [.oauth(provider: "github", url: url.absoluteString), .done]))
+        service.links = [.failure(APIError.notFound)]
+        authenticator.result = .success(nil)
+        let model = makeModel()
+
+        model.send("my open pull requests")
+        await model.settle()
+        model.signIn(provider: "github")
+        await model.settle()
+
+        #expect(model.rows.last?.kind == .signInFailed(provider: "github"))
+        #expect(authenticator.requests.map(\.url) == [url])
+        #expect(service.sent.count == 1)
+
+        model.retrySignIn(provider: "github")
+        await model.settle()
+        #expect(service.sent.last?.message == "Let's try signing in to GitHub again.")
+    }
+
+    @Test func callbackAfterAReopenResumesOnce() async throws {
+        let url = try #require(URL(string: "https://oyster.example.com/oauth/plaid/start?state=abc"))
+        let fresh = try #require(URL(string: "https://oyster.example.com/oauth/plaid/start?state=def"))
+        let callback = try #require(URL(string: "oyster://oauth/complete?provider=plaid&status=ok"))
+        service.script(
+            .init(events: [.oauth(provider: "plaid", url: url.absoluteString), .done]),
+            .init(events: [.text(delta: "Thanks!"), .done])
+        )
+        service.links = [.success(fresh)]
+        authenticator.result = .success(nil)
+        let model = makeModel()
+
+        model.send("my checking balance")
+        await model.settle()
+        authenticator.result = .success(callback)
+        model.signIn(provider: "plaid")
+        await model.settle()
+        // The same callback also reaches `.onOpenURL`, after the sheet already delivered it.
+        model.handleOAuthCallback(callback)
+        await model.settle()
+        // The row is consumed, so a stray tap can't reopen it either.
+        model.signIn(provider: "plaid")
+        await model.settle()
+
+        #expect(authenticator.requests.map(\.url) == [url, fresh])
+        #expect(service.sent.map(\.message) == ["my checking balance", "I've signed in to your bank."])
+        #expect(model.rows.last?.kind == .assistant("Thanks!"))
+    }
+
+    @Test func doubleTapOnSignInFetchesOneLinkAndPresentsOnce() async throws {
+        let url = try #require(URL(string: "https://oyster.example.com/oauth/strava/start?state=abc"))
+        let fresh = try #require(URL(string: "https://oyster.example.com/oauth/strava/start?state=def"))
+        let other = try #require(URL(string: "https://oyster.example.com/oauth/strava/start?state=ghi"))
+        service.script(.init(events: [.oauth(provider: "strava", url: url.absoluteString), .done]))
+        service.links = [.success(fresh), .success(other)]
+        authenticator.result = .success(nil)
+        let model = makeModel()
+
+        model.send("my weekly miles")
+        await model.settle()
+        model.signIn(provider: "strava")
+        #expect(!model.canReopenSignIn(provider: "strava"))
+        model.signIn(provider: "strava")
+        await model.settle()
+
+        #expect(service.linkRequests == ["strava"])
+        #expect(authenticator.requests.map(\.url) == [url, fresh])
+        // Once the sheet is closed, the row can be re-opened again.
+        #expect(model.canReopenSignIn(provider: "strava"))
+        #expect(model.rows.last?.kind == .signIn(provider: "strava", url: url))
     }
 
     @Test func sameCallbackFromTheSheetAndAnOpenedURLResumesOnce() async throws {
@@ -350,9 +428,26 @@ final class ScriptedChatService: ChatService, @unchecked Sendable {
     private var _sent: [Sent] = []
     private var _terminated = 0
     private var hanging: AsyncThrowingStream<ChatEvent, Error>.Continuation?
+    private var _links: [Result<URL, any Error>] = []
+    private var _linkRequests: [String] = []
 
     var sent: [Sent] { lock.withLock { _sent } }
     var terminatedStreams: Int { lock.withLock { _terminated } }
+    /// Answers to `oauthLink`, one per call.
+    var links: [Result<URL, any Error>] {
+        get { lock.withLock { _links } }
+        set { lock.withLock { _links = newValue } }
+    }
+    var linkRequests: [String] { lock.withLock { _linkRequests } }
+
+    func oauthLink(provider: String) async throws -> URL {
+        let link = lock.withLock {
+            _linkRequests.append(provider)
+            return _links.isEmpty ? nil : _links.removeFirst()
+        }
+        guard let link else { throw APIError.notFound }
+        return try link.get()
+    }
 
     func script(_ turns: Turn...) {
         lock.withLock { self.turns.append(contentsOf: turns) }
@@ -392,6 +487,7 @@ final class ScriptedChatService: ChatService, @unchecked Sendable {
     }
 }
 
+/// Start URLs are single-use, like the backend's: presenting one twice fails.
 @MainActor
 final class FakeAuthenticator: WebAuthenticating {
     struct Request: Equatable {
@@ -399,11 +495,15 @@ final class FakeAuthenticator: WebAuthenticating {
         let callbackScheme: String
     }
 
+    struct SpentURL: Error {}
+
     var result: Result<URL?, any Error> = .success(nil)
     private(set) var requests: [Request] = []
 
     func authenticate(url: URL, callbackScheme: String) async throws -> URL? {
+        let spent = requests.contains { $0.url == url }
         requests.append(Request(url: url, callbackScheme: callbackScheme))
+        if spent { throw SpentURL() }
         return try result.get()
     }
 }

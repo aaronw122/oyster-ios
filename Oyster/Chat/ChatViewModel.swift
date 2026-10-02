@@ -3,9 +3,11 @@ import Observation
 import OysterKit
 import os
 
-/// The chat stream the view model consumes; `APIClient` in the app, scripted in tests.
+/// The backend calls the view model makes; `APIClient` in the app, scripted in tests.
 protocol ChatService: Sendable {
     func messages(sessionId: String, message: String) -> AsyncThrowingStream<ChatEvent, Error>
+    /// A fresh single-use start URL for re-opening a sign-in.
+    func oauthLink(provider: String) async throws -> URL
 }
 
 extension APIClient: ChatService {}
@@ -55,6 +57,8 @@ final class ChatViewModel {
     @ObservationIgnored private(set) var currentTask: Task<Void, Never>?
     /// A sign-in that succeeded while a turn was still streaming; resumed once the turn is idle.
     @ObservationIgnored private var pendingResumeProvider: String?
+    /// Sign-ins being re-opened: a fresh link is loading or its sheet is up.
+    private(set) var reopeningSignIns: Set<String> = []
 
     private static let log = Logger(subsystem: "com.aaronw122.oyster", category: "chat")
 
@@ -136,11 +140,31 @@ final class ChatViewModel {
         return id
     }
 
-    /// Re-opens a sign-in the user dismissed.
-    func signIn(url: URL) {
-        guard canSend else { return }
+    /// Whether a sign-in row's button can re-open it now.
+    func canReopenSignIn(provider: String) -> Bool {
+        canSend && !reopeningSignIns.contains(provider)
+    }
+
+    /// Re-opens a sign-in the user dismissed. Start URLs are single-use, so the row's
+    /// URL is spent once presented: ask the server for a fresh one first. Repeated
+    /// taps while one is loading or presented are ignored.
+    func signIn(provider: String) {
+        guard canReopenSignIn(provider: provider), let service, hasPendingSignIn(provider: provider) else { return }
+        reopeningSignIns.insert(provider)
         currentTask = Task { [weak self] in
-            await self?.presentSignIn(url: url)
+            defer { self?.reopeningSignIns.remove(provider) }
+            let url: URL
+            do {
+                url = try await service.oauthLink(provider: provider)
+            } catch {
+                guard !Task.isCancelled, let self, self.hasPendingSignIn(provider: provider) else { return }
+                Self.log.error("Couldn't get a sign-in link: \(error.localizedDescription, privacy: .public)")
+                self.rows.append(ChatRow(.signInFailed(provider: provider)))
+                return
+            }
+            // The callback may have arrived (via an opened URL) while the link was loading.
+            guard !Task.isCancelled, let self, self.hasPendingSignIn(provider: provider) else { return }
+            await self.presentSignIn(url: url, provider: provider)
         }
     }
 
@@ -194,8 +218,8 @@ final class ChatViewModel {
         resumePendingSignIn()
         // The stream ends right after `oauth`; sign in once the turn is over — unless the
         // callback already arrived (via an opened URL) while the turn was streaming.
-        if !isStreaming, let signIn, pendingSignInProvider(for: signIn) != nil {
-            await presentSignIn(url: signIn)
+        if !isStreaming, let signIn, let provider = pendingSignInProvider(for: signIn) {
+            await presentSignIn(url: signIn, provider: provider)
         }
     }
 
@@ -241,14 +265,14 @@ final class ChatViewModel {
 
     // MARK: - Sign-in
 
-    private func presentSignIn(url: URL) async {
+    private func presentSignIn(url: URL, provider: String) async {
         do {
             guard let callback = try await authenticator.authenticate(url: url, callbackScheme: OAuthCallback.scheme) else {
                 return  // The user closed the sheet; the row's button can reopen it.
             }
             handleOAuthCallback(callback)
         } catch {
-            if let provider = pendingSignInProvider(for: url) {
+            if hasPendingSignIn(provider: provider) {
                 rows.append(ChatRow(.signInFailed(provider: provider)))
             }
         }

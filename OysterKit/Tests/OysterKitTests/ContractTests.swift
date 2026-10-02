@@ -41,6 +41,7 @@ private let fixtureTypes: [String: @Sendable (Data) throws -> Void] = [
     "error.json": { try assertRoundTrips(ApiError.self, $0) },
     "health.json": { try assertRoundTrips(HealthResponse.self, $0) },
     "messages-request.json": { try assertRoundTrips(MessagesRequest.self, $0) },
+    "oauth-link-response.json": { try assertRoundTrips(OAuthLinkResponse.self, $0) },
     "pearl-data.inline.json": { try assertRoundTrips(PearlData.self, $0) },
     "pearl-data.medium.json": { try assertRoundTrips(PearlData.self, $0) },
     "pearl-data.rectangular.json": { try assertRoundTrips(PearlData.self, $0) },
