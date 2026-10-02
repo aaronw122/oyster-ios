@@ -76,6 +76,39 @@ private func sse(_ events: String...) -> Data {
         #expect(url.path(percentEncoded: true) == "/pearls/a%2F..%2Fb/data")
     }
 
+    @Test func oauthLinkPostsWithBearerAndDecodesTheURL() async throws {
+        let body = try Fixture.data("oauth-link-response.json")
+        let server = StubServer(basePath: "/api") { _ in .json(200, body) }
+
+        let url = try await server.apiClient().oauthLink(provider: "github")
+
+        #expect(url == (try Fixture.decode(OAuthLinkResponse.self, "oauth-link-response.json")).url)
+        let request = try #require(server.requests.first)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path() == "/api/oauth/github/link")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(StubServer.token)")
+    }
+
+    @Test func oauthLinkProviderIsASinglePathComponent() async throws {
+        let body = try Fixture.data("oauth-link-response.json")
+        let server = StubServer { _ in .json(200, body) }
+
+        _ = try await server.apiClient().oauthLink(provider: "a/../b")
+
+        let url = try #require(server.requests.first?.url)
+        #expect(url.path(percentEncoded: true) == "/oauth/a%2F..%2Fb/link")
+    }
+
+    @Test func oauthLinkUnknownProviderIsNotFound() async throws {
+        let body = Data(#"{"error":{"code":"unknown_provider","message":"Unknown provider"}}"#.utf8)
+        let server = StubServer { _ in .json(404, body) }
+        let api = server.apiClient()
+
+        await expectAPIError({ _ = try await api.oauthLink(provider: "nope") }) { error in
+            if case .notFound = error { true } else { false }
+        }
+    }
+
     @Test(arguments: [401, 404, 503])
     func mappedStatusesBecomeDedicatedErrors(status: Int) async throws {
         let body = try Fixture.data("error.json")

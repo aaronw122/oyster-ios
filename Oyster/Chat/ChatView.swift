@@ -132,10 +132,10 @@ private struct ChatRowView: View {
         case .saved(let name):
             Label("Saved “\(name)”. Add it from your Home Screen or Lock Screen.", systemImage: "checkmark.circle.fill")
                 .symbolRenderingMode(.hierarchical)
-        case .signIn(let provider, let url):
+        case .signIn(let provider, _):
             VStack(alignment: .leading, spacing: 10) {
                 Text("Sign in to \(ProviderName.display(for: provider)) to continue.")
-                Button("Sign in") { model.signIn(url: url) }
+                Button("Sign in") { model.signIn(provider: provider) }
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.canSend)
             }

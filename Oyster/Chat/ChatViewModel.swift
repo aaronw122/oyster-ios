@@ -3,9 +3,11 @@ import Observation
 import OysterKit
 import os
 
-/// The chat stream the view model consumes; `APIClient` in the app, scripted in tests.
+/// The backend calls the view model makes; `APIClient` in the app, scripted in tests.
 protocol ChatService: Sendable {
     func messages(sessionId: String, message: String) -> AsyncThrowingStream<ChatEvent, Error>
+    /// A fresh single-use start URL for re-opening a sign-in.
+    func oauthLink(provider: String) async throws -> URL
 }
 
 extension APIClient: ChatService {}
@@ -136,11 +138,23 @@ final class ChatViewModel {
         return id
     }
 
-    /// Re-opens a sign-in the user dismissed.
-    func signIn(url: URL) {
-        guard canSend else { return }
+    /// Re-opens a sign-in the user dismissed. Start URLs are single-use, so the row's
+    /// URL is spent once presented: ask the server for a fresh one first.
+    func signIn(provider: String) {
+        guard canSend, let service, hasPendingSignIn(provider: provider) else { return }
         currentTask = Task { [weak self] in
-            await self?.presentSignIn(url: url)
+            let url: URL
+            do {
+                url = try await service.oauthLink(provider: provider)
+            } catch {
+                guard !Task.isCancelled, let self, self.hasPendingSignIn(provider: provider) else { return }
+                Self.log.error("Couldn't get a sign-in link: \(error.localizedDescription, privacy: .public)")
+                self.rows.append(ChatRow(.signInFailed(provider: provider)))
+                return
+            }
+            // The callback may have arrived (via an opened URL) while the link was loading.
+            guard !Task.isCancelled, let self, self.hasPendingSignIn(provider: provider) else { return }
+            await self.presentSignIn(url: url, provider: provider)
         }
     }
 
@@ -194,8 +208,8 @@ final class ChatViewModel {
         resumePendingSignIn()
         // The stream ends right after `oauth`; sign in once the turn is over — unless the
         // callback already arrived (via an opened URL) while the turn was streaming.
-        if !isStreaming, let signIn, pendingSignInProvider(for: signIn) != nil {
-            await presentSignIn(url: signIn)
+        if !isStreaming, let signIn, let provider = pendingSignInProvider(for: signIn) {
+            await presentSignIn(url: signIn, provider: provider)
         }
     }
 
@@ -241,14 +255,14 @@ final class ChatViewModel {
 
     // MARK: - Sign-in
 
-    private func presentSignIn(url: URL) async {
+    private func presentSignIn(url: URL, provider: String) async {
         do {
             guard let callback = try await authenticator.authenticate(url: url, callbackScheme: OAuthCallback.scheme) else {
                 return  // The user closed the sheet; the row's button can reopen it.
             }
             handleOAuthCallback(callback)
         } catch {
-            if let provider = pendingSignInProvider(for: url) {
+            if hasPendingSignIn(provider: provider) {
                 rows.append(ChatRow(.signInFailed(provider: provider)))
             }
         }
