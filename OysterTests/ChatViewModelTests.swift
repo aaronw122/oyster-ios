@@ -212,6 +212,29 @@ import Testing
         #expect(model.rows.last?.kind == .assistant("Thanks!"))
     }
 
+    @Test func doubleTapOnSignInFetchesOneLinkAndPresentsOnce() async throws {
+        let url = try #require(URL(string: "https://oyster.example.com/oauth/strava/start?state=abc"))
+        let fresh = try #require(URL(string: "https://oyster.example.com/oauth/strava/start?state=def"))
+        let other = try #require(URL(string: "https://oyster.example.com/oauth/strava/start?state=ghi"))
+        service.script(.init(events: [.oauth(provider: "strava", url: url.absoluteString), .done]))
+        service.links = [.success(fresh), .success(other)]
+        authenticator.result = .success(nil)
+        let model = makeModel()
+
+        model.send("my weekly miles")
+        await model.settle()
+        model.signIn(provider: "strava")
+        #expect(!model.canReopenSignIn(provider: "strava"))
+        model.signIn(provider: "strava")
+        await model.settle()
+
+        #expect(service.linkRequests == ["strava"])
+        #expect(authenticator.requests.map(\.url) == [url, fresh])
+        // Once the sheet is closed, the row can be re-opened again.
+        #expect(model.canReopenSignIn(provider: "strava"))
+        #expect(model.rows.last?.kind == .signIn(provider: "strava", url: url))
+    }
+
     @Test func sameCallbackFromTheSheetAndAnOpenedURLResumesOnce() async throws {
         let url = try #require(URL(string: "https://oyster.example.com/oauth/plaid/start?state=abc"))
         let callback = try #require(URL(string: "oyster://oauth/complete?provider=plaid&status=ok"))

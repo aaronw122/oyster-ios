@@ -57,6 +57,8 @@ final class ChatViewModel {
     @ObservationIgnored private(set) var currentTask: Task<Void, Never>?
     /// A sign-in that succeeded while a turn was still streaming; resumed once the turn is idle.
     @ObservationIgnored private var pendingResumeProvider: String?
+    /// Sign-ins being re-opened: a fresh link is loading or its sheet is up.
+    private(set) var reopeningSignIns: Set<String> = []
 
     private static let log = Logger(subsystem: "com.aaronw122.oyster", category: "chat")
 
@@ -138,11 +140,19 @@ final class ChatViewModel {
         return id
     }
 
+    /// Whether a sign-in row's button can re-open it now.
+    func canReopenSignIn(provider: String) -> Bool {
+        canSend && !reopeningSignIns.contains(provider)
+    }
+
     /// Re-opens a sign-in the user dismissed. Start URLs are single-use, so the row's
-    /// URL is spent once presented: ask the server for a fresh one first.
+    /// URL is spent once presented: ask the server for a fresh one first. Repeated
+    /// taps while one is loading or presented are ignored.
     func signIn(provider: String) {
-        guard canSend, let service, hasPendingSignIn(provider: provider) else { return }
+        guard canReopenSignIn(provider: provider), let service, hasPendingSignIn(provider: provider) else { return }
+        reopeningSignIns.insert(provider)
         currentTask = Task { [weak self] in
+            defer { self?.reopeningSignIns.remove(provider) }
             let url: URL
             do {
                 url = try await service.oauthLink(provider: provider)

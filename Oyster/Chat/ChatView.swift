@@ -137,7 +137,7 @@ private struct ChatRowView: View {
                 Text("Sign in to \(ProviderName.display(for: provider)) to continue.")
                 Button("Sign in") { model.signIn(provider: provider) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!model.canSend)
+                    .disabled(!model.canReopenSignIn(provider: provider))
             }
         case .signInFailed(let provider):
             VStack(alignment: .leading, spacing: 10) {
